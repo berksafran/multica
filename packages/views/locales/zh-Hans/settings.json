@@ -24,6 +24,7 @@
       "tokens": "API Token",
       "general": "通用",
       "repositories": "代码仓库",
+      "integrations": "集成",
       "labs": "实验室",
       "members": "成员"
     }
