@@ -19,6 +19,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     downloadDesktop: "Download Desktop",
     worksWith: "Works with",
     imageAlt: "Multica board view \u2014 issues managed by humans and agents",
+    whatsNewLabel: "What\u2019s new",
   },
 
   features: {

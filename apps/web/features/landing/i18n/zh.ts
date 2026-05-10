@@ -19,6 +19,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
     downloadDesktop: "下载桌面端",
     worksWith: "支持",
     imageAlt: "Multica \u770b\u677f\u89c6\u56fe\u2014\u2014\u4eba\u7c7b\u548c 智能体 \u534f\u540c\u7ba1\u7406\u4efb\u52a1",
+    whatsNewLabel: "\u6700\u65b0\u66f4\u65b0",
   },
 
   features: {

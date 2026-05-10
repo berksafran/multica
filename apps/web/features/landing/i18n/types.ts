@@ -29,6 +29,7 @@ export type LandingDict = {
     downloadDesktop: string;
     worksWith: string;
     imageAlt: string;
+    whatsNewLabel: string;
   };
   features: {
     teammates: FeatureSection;
