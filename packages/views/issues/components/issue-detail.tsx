@@ -58,6 +58,7 @@ import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, issueUsageOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueLabelsOptions } from "@multica/core/labels";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import { useRecentIssuesStore } from "@multica/core/issues/stores";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
@@ -270,25 +271,28 @@ const EMPTY_REPLIES: TimelineEntry[] = [];
 // ---------------------------------------------------------------------------
 //
 // Properties shown in the sidebar split into two groups:
-//   - core: always rendered (status / priority / assignee / labels)
+//   - core: always rendered (status / priority / assignee / project / parent)
 //   - optional: rendered only when the issue has a value for that field OR
 //     the user explicitly added it via "+ Add property" in this session
+//     (due_date / labels)
 //
 // `OPTIONAL_PROP_KEYS` is the open set — adding a new optional field
 // (e.g. `start_date`) means appending here, wiring its row in the JSX
 // switch below, and adding a locale key. The picker, visibility rules,
 // and add-property menu all flow from this one list.
-const OPTIONAL_PROP_KEYS = ["due_date", "project", "parent"] as const;
+const OPTIONAL_PROP_KEYS = ["due_date", "labels"] as const;
 type OptionalPropKey = (typeof OPTIONAL_PROP_KEYS)[number];
 
-function isOptionalPropSet(issue: Issue, key: OptionalPropKey): boolean {
+function isOptionalPropSet(
+  issue: Issue,
+  key: OptionalPropKey,
+  attachedLabelsCount: number,
+): boolean {
   switch (key) {
     case "due_date":
       return !!issue.due_date;
-    case "project":
-      return !!issue.project_id;
-    case "parent":
-      return !!issue.parent_issue_id;
+    case "labels":
+      return attachedLabelsCount > 0;
   }
 }
 
@@ -1041,6 +1045,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const actions = useIssueActions(issue);
   const handleUpdateField = actions.updateField;
 
+  // Labels live in their own query (not on the issue body) — fetch the count
+  // here so seeding can decide whether the "Labels" optional row should be
+  // shown for an issue that already has labels attached.
+  const { data: attachedLabels = [] } = useQuery(issueLabelsOptions(wsId, id));
+  const attachedLabelsCount = attachedLabels.length;
+
   // Seed the visible-optional-props set:
   //   - on issue switch, reset to whichever fields are currently set
   //   - on the SAME issue, additively pick up fields the user just set
@@ -1054,7 +1064,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       setAutoOpenProp(null);
       const seed = new Set<OptionalPropKey>();
       for (const k of OPTIONAL_PROP_KEYS) {
-        if (isOptionalPropSet(issue, k)) seed.add(k);
+        if (isOptionalPropSet(issue, k, attachedLabelsCount)) seed.add(k);
       }
       setVisibleOptionalProps(seed);
       return;
@@ -1062,29 +1072,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     setVisibleOptionalProps((prev) => {
       let next = prev;
       for (const k of OPTIONAL_PROP_KEYS) {
-        if (isOptionalPropSet(issue, k) && !next.has(k)) {
+        if (isOptionalPropSet(issue, k, attachedLabelsCount) && !next.has(k)) {
           if (next === prev) next = new Set(prev);
           next.add(k);
         }
       }
       return next;
     });
-  }, [issue]);
+  }, [issue, attachedLabelsCount]);
 
   const addOptionalProp = useCallback(
     (key: OptionalPropKey) => {
-      // Parent has no in-sidebar picker — open the existing set-parent
-      // modal directly. Row still appears for visual feedback.
-      if (key === "parent") {
-        setVisibleOptionalProps((prev) => {
-          if (prev.has(key)) return prev;
-          const next = new Set(prev);
-          next.add(key);
-          return next;
-        });
-        actions.openSetParent();
-        return;
-      }
       setVisibleOptionalProps((prev) => {
         if (prev.has(key)) return prev;
         const next = new Set(prev);
@@ -1093,7 +1091,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       });
       setAutoOpenProp(key);
     },
-    [actions],
+    [],
   );
 
   // Clear the auto-open flag after the next render so pickers (which read
@@ -1202,8 +1200,31 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           <PropRow label={t(($) => $.detail.prop_assignee)}>
             <AssigneePicker assigneeType={issue.assignee_type} assigneeId={issue.assignee_id} onUpdate={handleUpdateField} align="start" />
           </PropRow>
-          <PropRow label={t(($) => $.detail.prop_labels)}>
-            <LabelPicker issueId={issue.id} align="start" />
+          <PropRow label={t(($) => $.detail.prop_project)}>
+            <ProjectPicker
+              projectId={issue.project_id}
+              onUpdate={handleUpdateField}
+            />
+          </PropRow>
+          <PropRow label={t(($) => $.detail.prop_parent)}>
+            {parentIssue ? (
+              <AppLink
+                href={paths.issueDetail(parentIssue.id)}
+                className="flex min-w-0 items-center gap-1.5 rounded px-1 -mx-1 hover:bg-accent/30 transition-colors overflow-hidden"
+              >
+                <StatusIcon status={parentIssue.status} className="h-3.5 w-3.5 shrink-0" />
+                <span className="text-muted-foreground shrink-0">{parentIssue.identifier}</span>
+                <span className="truncate">{parentIssue.title}</span>
+              </AppLink>
+            ) : (
+              <button
+                type="button"
+                onClick={actions.openSetParent}
+                className="flex items-center gap-1.5 rounded px-1 -mx-1 hover:bg-accent/30 transition-colors text-muted-foreground"
+              >
+                {t(($) => $.detail.set_parent_action)}
+              </button>
+            )}
           </PropRow>
 
           {/* Optional props — rendered only when set on the issue OR added
@@ -1218,35 +1239,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               />
             </PropRow>
           )}
-          {visibleOptionalProps.has("project") && (
-            <PropRow label={t(($) => $.detail.prop_project)}>
-              <ProjectPicker
-                projectId={issue.project_id}
-                onUpdate={handleUpdateField}
-                defaultOpen={autoOpenProp === "project"}
+          {visibleOptionalProps.has("labels") && (
+            <PropRow label={t(($) => $.detail.prop_labels)}>
+              <LabelPicker
+                issueId={issue.id}
+                align="start"
+                defaultOpen={autoOpenProp === "labels"}
               />
-            </PropRow>
-          )}
-          {visibleOptionalProps.has("parent") && (
-            <PropRow label={t(($) => $.detail.prop_parent)}>
-              {parentIssue ? (
-                <AppLink
-                  href={paths.issueDetail(parentIssue.id)}
-                  className="flex min-w-0 items-center gap-1.5 rounded px-1 -mx-1 hover:bg-accent/30 transition-colors overflow-hidden"
-                >
-                  <StatusIcon status={parentIssue.status} className="h-3.5 w-3.5 shrink-0" />
-                  <span className="text-muted-foreground shrink-0">{parentIssue.identifier}</span>
-                  <span className="truncate">{parentIssue.title}</span>
-                </AppLink>
-              ) : (
-                <button
-                  type="button"
-                  onClick={actions.openSetParent}
-                  className="flex items-center gap-1.5 rounded px-1 -mx-1 hover:bg-accent/30 transition-colors text-muted-foreground"
-                >
-                  {t(($) => $.detail.set_parent_action)}
-                </button>
-              )}
             </PropRow>
           )}
 
@@ -1273,8 +1272,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     >
                       <span className="truncate">
                         {k === "due_date" && t(($) => $.detail.prop_due_date)}
-                        {k === "project" && t(($) => $.detail.prop_project)}
-                        {k === "parent" && t(($) => $.detail.prop_parent)}
+                        {k === "labels" && t(($) => $.detail.prop_labels)}
                       </span>
                     </button>
                   ))}

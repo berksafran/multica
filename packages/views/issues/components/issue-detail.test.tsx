@@ -542,22 +542,25 @@ describe("IssueDetail (shared)", () => {
     expect(wsLink.closest("a")).toHaveAttribute("href", "/test/issues");
   });
 
-  it("renders properties sidebar with status, priority, assignee, due date", async () => {
+  it("renders properties sidebar with all core rows plus set optional rows", async () => {
     renderIssueDetail();
 
     await waitFor(() => {
       expect(screen.getByText("Properties")).toBeInTheDocument();
     });
 
+    // Core rows — always rendered regardless of whether the issue has a value.
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Assignee")).toBeInTheDocument();
+    // "Project" appears twice (row label + picker stub), so disambiguate by id.
+    expect(screen.getByTestId("project-picker")).toBeInTheDocument();
+    expect(screen.getByText("Parent")).toBeInTheDocument();
     // due_date is set in the fixture, so the optional row is visible.
     expect(screen.getByText("Due date")).toBeInTheDocument();
-    // project_id and parent_issue_id are null in the fixture — those
-    // optional rows must stay hidden by default.
-    expect(screen.queryByText("Project")).not.toBeInTheDocument();
-    expect(screen.queryByText("Parent")).not.toBeInTheDocument();
+    // No labels are attached in the fixture — the Labels optional row
+    // must stay hidden by default.
+    expect(screen.queryByText("Labels")).not.toBeInTheDocument();
     // The "+ Add property" affordance is always offered while any
     // optional field is still hidden.
     expect(screen.getByText("Add property")).toBeInTheDocument();
@@ -574,8 +577,10 @@ describe("IssueDetail (shared)", () => {
     });
 
     expect(screen.queryByText("Due date")).not.toBeInTheDocument();
-    expect(screen.queryByText("Project")).not.toBeInTheDocument();
-    expect(screen.queryByText("Parent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Labels")).not.toBeInTheDocument();
+    // Project and Parent are core rows — always present regardless of value.
+    expect(screen.getByTestId("project-picker")).toBeInTheDocument();
+    expect(screen.getByText("Parent")).toBeInTheDocument();
     expect(screen.getByText("Add property")).toBeInTheDocument();
   });
 
