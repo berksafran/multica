@@ -66,6 +66,97 @@ func TestTryAutoUpdate_SkipsWhenTasksRunning(t *testing.T) {
 	}
 }
 
+// TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier covers the race the
+// review flagged: cheap pre-fetch idle check passes (activeTasks == 0), then
+// during the release fetch a poller decides to claim and bumps
+// claimsInFlight. trySetClaimBarrier must observe that and defer rather than
+// proceed into runUpdate (which would lead to a triggerRestart cancelling
+// the just-claimed task mid-run).
+func TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier(t *testing.T) {
+	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
+	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
+
+	d.claimsInFlight = 1 // poller is mid-ClaimTask while activeTasks is still 0
+
+	d.tryAutoUpdate(context.Background())
+
+	if restartCalls.Load() != 0 {
+		t.Fatalf("triggerRestart fired despite a claim being in flight at the barrier")
+	}
+	if d.updating.Load() {
+		t.Fatalf("updating flag must be released after a deferred upgrade so the next tick can retry")
+	}
+	if d.pauseClaims {
+		t.Fatalf("pauseClaims must be cleared after a deferred upgrade")
+	}
+}
+
+// TestTryAutoUpdate_HoldsBarrierAcrossRestart asserts the success path leaves
+// pauseClaims set: process exit is imminent and clearing the barrier would
+// open a window for a poller to claim a task that the imminent restart is
+// about to cancel.
+func TestTryAutoUpdate_HoldsBarrierAcrossRestart(t *testing.T) {
+	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
+	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
+	d.runUpdateFn = func(string) (string, error) { return "upgraded", nil }
+
+	d.tryAutoUpdate(context.Background())
+
+	if restartCalls.Load() != 1 {
+		t.Fatalf("triggerRestart fired %d times, want 1", restartCalls.Load())
+	}
+	if !d.pauseClaims {
+		t.Fatalf("pauseClaims must remain set across the restart kick; got cleared")
+	}
+}
+
+// TestTryAutoUpdate_ReleasesBarrierOnUpgradeFailure asserts the failure path
+// clears pauseClaims so the daemon can keep claiming tasks normally and
+// retry the upgrade on the next tick.
+func TestTryAutoUpdate_ReleasesBarrierOnUpgradeFailure(t *testing.T) {
+	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
+	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
+	d.runUpdateFn = func(string) (string, error) {
+		return "brew network error", errors.New("brew upgrade failed")
+	}
+
+	d.tryAutoUpdate(context.Background())
+
+	if restartCalls.Load() != 0 {
+		t.Fatalf("triggerRestart fired despite upgrade failure")
+	}
+	if d.pauseClaims {
+		t.Fatalf("pauseClaims must be cleared after a failed upgrade so pollers resume claiming")
+	}
+}
+
+// TestTryEnterClaim_RespectsBarrier asserts the poller-side helper returns
+// false while pauseClaims is held and that pairs of enter/exit balance the
+// counter so a later barrier set sees idle.
+func TestTryEnterClaim_RespectsBarrier(t *testing.T) {
+	d := &Daemon{}
+
+	if !d.tryEnterClaim() {
+		t.Fatal("tryEnterClaim should succeed when barrier is unset")
+	}
+	d.exitClaim()
+	if d.claimsInFlight != 0 {
+		t.Fatalf("claimsInFlight not balanced: %d", d.claimsInFlight)
+	}
+
+	if !d.trySetClaimBarrier() {
+		t.Fatal("trySetClaimBarrier should succeed when idle")
+	}
+	if d.tryEnterClaim() {
+		t.Fatal("tryEnterClaim must refuse while barrier is held")
+	}
+	d.releaseClaimBarrier()
+	if !d.tryEnterClaim() {
+		t.Fatal("tryEnterClaim should succeed after barrier release")
+	}
+	d.exitClaim()
+}
+
 func TestTryAutoUpdate_SkipsWhenFetchFails(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, nil, errors.New("network down"))

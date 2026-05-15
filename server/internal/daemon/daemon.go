@@ -112,6 +112,22 @@ type Daemon struct {
 	updating      atomic.Bool        // prevents concurrent update attempts
 	activeTasks   atomic.Int64       // number of tasks currently in handleTask; exposed via /health
 
+	// claimMu guards pauseClaims and claimsInFlight. It is held only for the
+	// microseconds it takes to make a decision; ClaimTask itself runs without
+	// the lock so a slow per-runtime claim cannot stall auto-update or any
+	// other poller.
+	//
+	// The pair is the auto-update path's barrier against the issue's
+	// requirement that "升级过程中如果有 task 进来，会延后升级而不是中断 task":
+	// runRuntimePoller refuses to call ClaimTask while pauseClaims is set, and
+	// tryAutoUpdate refuses to flip pauseClaims while any poller is mid-claim
+	// or any task is in handleTask. Together that closes the fetch-then-claim
+	// race where a new task slipping in during the release-metadata fetch
+	// would be cancelled by triggerRestart's root-ctx cancel.
+	claimMu        sync.Mutex
+	pauseClaims    bool // when true, runRuntimePoller skips ClaimTask
+	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+
 	activeEnvRootsMu sync.Mutex
 	activeEnvRoots   map[string]int // env root path -> reference count (handles reuse paths marked twice)
 
@@ -1561,6 +1577,55 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 		"runtime_id", runtimeID, "update_id", updateID, "error", lastErr)
 }
 
+// tryEnterClaim records the intent to call ClaimTask. Returns true if the
+// caller may proceed, false if the auto-update barrier is in effect. Every
+// successful call MUST be paired with an exitClaim() on every exit path —
+// either right after a failed/empty claim, or via the handleTask goroutine's
+// defer once the task is handed off.
+func (d *Daemon) tryEnterClaim() bool {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	if d.pauseClaims {
+		return false
+	}
+	d.claimsInFlight++
+	return true
+}
+
+// exitClaim releases the in-flight claim recorded by tryEnterClaim.
+func (d *Daemon) exitClaim() {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	d.claimsInFlight--
+}
+
+// trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
+// fully idle (no claims in flight, no tasks running). Returns true if the
+// caller now holds the barrier and must release it with releaseClaimBarrier
+// on every non-restart exit path; false if the daemon is busy and the caller
+// should defer to the next tick. Used by tryAutoUpdate to close the race
+// where a task slips in between the cheap pre-fetch idle check and the
+// actual upgrade kick-off.
+func (d *Daemon) trySetClaimBarrier() bool {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	if d.claimsInFlight > 0 || d.activeTasks.Load() > 0 {
+		return false
+	}
+	d.pauseClaims = true
+	return true
+}
+
+// releaseClaimBarrier clears the auto-update claim barrier so pollers may
+// resume claiming. Called on failure paths only — a successful upgrade leaves
+// the barrier set because triggerRestart is about to take the process down
+// and clearing it would open a window for new claims during shutdown.
+func (d *Daemon) releaseClaimBarrier() {
+	d.claimMu.Lock()
+	defer d.claimMu.Unlock()
+	d.pauseClaims = false
+}
+
 // triggerRestart initiates a graceful daemon restart after a successful CLI update.
 // For brew installs, it keeps the symlink path (e.g. /opt/homebrew/bin/multica)
 // so the restarted daemon picks up the new Cellar version automatically.
@@ -1735,8 +1800,22 @@ func (d *Daemon) runRuntimePoller(
 			continue
 		}
 
+		// Refuse new claims while an auto-update is preparing to roll the
+		// process. The barrier is paired with a re-check of claimsInFlight +
+		// activeTasks inside tryAutoUpdate, so once we get past tryEnterClaim
+		// the auto-update path is guaranteed to defer until this poller has
+		// handed the task off (or given up).
+		if !d.tryEnterClaim() {
+			sem <- slot
+			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
+				return
+			}
+			continue
+		}
+
 		task, err := d.client.ClaimTask(pollerCtx, rid)
 		if err != nil {
+			d.exitClaim()
 			sem <- slot
 			if pollerCtx.Err() == nil {
 				if isRuntimeNotFoundError(err) {
@@ -1756,6 +1835,7 @@ func (d *Daemon) runRuntimePoller(
 		}
 
 		if task == nil {
+			d.exitClaim()
 			sem <- slot
 			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
 				return
@@ -1772,6 +1852,7 @@ func (d *Daemon) runRuntimePoller(
 		d.activeTasks.Add(1)
 		go func(t Task, slot int) {
 			defer taskWG.Done()
+			defer d.exitClaim()
 			defer d.activeTasks.Add(-1)
 			defer func() { sem <- slot }()
 			d.handleTask(parentCtx, t, slot)

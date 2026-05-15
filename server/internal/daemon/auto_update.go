@@ -98,15 +98,11 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		d.logger.Debug("auto-update: skip — update already in progress")
 		return
 	}
-	// "Idle" = no in-flight tasks. handleTask increments activeTasks before
-	// the goroutine runs and decrements after it returns, so checking this
-	// before claiming the `updating` CAS is the right ordering: a task that
-	// starts the instant after we pass the check would have to grab a
-	// pollLoop slot, and the daemon's restart cancels ctx anyway. The narrow
-	// race (task starts between the load and the upgrade kicking off) is
-	// acceptable — handleTask runs under d.rootCtx, not the run ctx that
-	// triggerRestart cancels, so an in-flight task continues even across
-	// the restart kick (see runRuntimePoller's parentCtx).
+	// Cheap pre-fetch idle check: the release-metadata fetch below makes an
+	// HTTPS call to GitHub, and there is no point paying that cost (or the
+	// rate-limit budget) when we already know we are going to defer. A task
+	// that starts between this load and the barrier check below is caught
+	// by the strict re-check under claimMu inside trySetClaimBarrier.
 	if running := d.activeTasks.Load(); running > 0 {
 		d.logger.Debug("auto-update: skip — tasks running", "active", running)
 		return
@@ -139,6 +135,24 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		}
 	}()
 
+	// Strict barrier: between the cheap pre-fetch idle check and now the
+	// release fetch took anywhere from tens of milliseconds (typical) to
+	// seconds (slow link, GitHub hiccup), plenty of time for a poller to
+	// claim a fresh task. trySetClaimBarrier checks claimsInFlight +
+	// activeTasks under claimMu and only flips pauseClaims to true if both
+	// are zero, so once it returns true we can run the upgrade knowing that
+	// no in-flight task will be cancelled by triggerRestart.
+	if !d.trySetClaimBarrier() {
+		d.logger.Info("auto-update: deferring — task or claim in flight at barrier check")
+		return
+	}
+	barrierReleased := false
+	defer func() {
+		if !barrierReleased {
+			d.releaseClaimBarrier()
+		}
+	}()
+
 	d.logger.Info("auto-update: newer release available, upgrading",
 		"current", d.cfg.CLIVersion, "target", release.TagName)
 
@@ -150,9 +164,11 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 
 	d.logger.Info("auto-update: upgrade completed, restarting", "target", release.TagName, "output", output)
 	// triggerRestart cancels the root context, which causes Run() to return
-	// and the parent (cmd_daemon.go) to re-exec the new binary. Leave the
-	// `updating` flag held — process exit is imminent and clearing it would
-	// open a window for another loop iteration to fire mid-shutdown.
+	// and the parent (cmd_daemon.go) to re-exec the new binary. Leave both
+	// the updating flag and the claim barrier held — process exit is
+	// imminent and clearing either would open a window for new claims / a
+	// second auto-update tick to fire mid-shutdown.
 	released = true
+	barrierReleased = true
 	d.triggerRestart()
 }
