@@ -28,8 +28,12 @@ type fakePTY struct {
 	closeCh   chan struct{}
 
 	// waitDone signals Wait can return. Defaults closed by Close.
-	waitOnce  sync.Once
-	waitDone  chan struct{}
+	waitOnce sync.Once
+	waitDone chan struct{}
+	// waitDelay (optional) sleeps inside Wait AFTER waitDone fires.
+	// Lets tests prove Manager.Close waits for session finalize rather
+	// than just for s.Close() to return.
+	waitDelay time.Duration
 	exitCode  int32
 	resizedCh chan [2]uint16
 	closed    atomic.Bool
@@ -88,6 +92,9 @@ func (p *fakePTY) Resize(cols, rows uint16) error {
 
 func (p *fakePTY) Wait() (int, error) {
 	<-p.waitDone
+	if p.waitDelay > 0 {
+		time.Sleep(p.waitDelay)
+	}
 	return int(atomic.LoadInt32(&p.exitCode)), nil
 }
 
@@ -617,5 +624,73 @@ func TestSession_WriteUpdatesLastIO(t *testing.T) {
 
 	if _, err := f.mgr.Get(sess.ID()); err != nil {
 		t.Fatalf("session evicted despite recent write: %v", err)
+	}
+}
+
+func TestSession_DoneFiresAfterDeregister(t *testing.T) {
+	// Locks the finalize-order contract from Round 2 review:
+	//   ExitC → close(output) → onClose/deregister → close(done)
+	// External waiters (daemonws bridge, GC hook, audit) use `<-Done()`
+	// as the signal that the session is fully torn down. Any consumer
+	// querying the manager immediately after Done() must observe the
+	// session deregistered.
+	f := newFixture(t)
+	defer f.mgr.Close()
+
+	sess, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id := sess.ID()
+
+	sess.Close("user_requested")
+	<-sess.Done()
+
+	if _, err := f.mgr.Get(id); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Get after <-Done() = %v, want ErrSessionNotFound (finalize order violated)", err)
+	}
+}
+
+func TestManager_CloseWaitsForSessionFinalize(t *testing.T) {
+	// Manager.Close used to only wait for s.Close() (which just initiates
+	// teardown — signals stop, closes the PTY). The waitLoop finalizer
+	// could still be running after Manager.Close returned, leaving the
+	// sessions map non-empty briefly. With Round 2 review's fix, each
+	// goroutine in Manager.Close additionally `<-s.Done()` so the manager
+	// is fully drained by the time Close returns. We inject a Wait delay
+	// to make the difference observable: without the fix, the session map
+	// is still populated when Manager.Close returns and `<-s.Done()` would
+	// block.
+	f := newFixture(t)
+	f.spawner.make = func(tt *testing.T, req SpawnRequest) (*fakePTY, error) {
+		p := newFakePTY(tt, req.Cols, req.Rows)
+		p.waitDelay = 150 * time.Millisecond
+		return p, nil
+	}
+
+	s1, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s2, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	f.mgr.Close()
+
+	// After Close returns: registry empty AND every Done is already closed.
+	if got := len(f.mgr.Sessions()); got != 0 {
+		t.Errorf("Sessions after Manager.Close = %d, want 0", got)
+	}
+	for _, s := range []*PtySession{s1, s2} {
+		select {
+		case <-s.Done():
+		default:
+			t.Errorf("session %s Done not closed when Manager.Close returned", s.ID())
+		}
+		if _, err := f.mgr.Get(s.ID()); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("session %s still registered after Manager.Close: %v", s.ID(), err)
+		}
 	}
 }

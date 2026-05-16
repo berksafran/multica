@@ -229,13 +229,17 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	// Parallel: each session.Close blocks for the unix spawner's
 	// SIGHUP→grace→SIGKILL window. Running serially would multiply
-	// shutdown latency by N sessions.
+	// shutdown latency by N sessions. We additionally wait on each
+	// session's Done() so Manager.Close returning is a hard guarantee
+	// that every session finalized (output closed, deregistered, done
+	// fired) — downstream GC/audit cleanup relies on this.
 	var wg sync.WaitGroup
 	for _, s := range live {
 		wg.Add(1)
 		go func(s *PtySession) {
 			defer wg.Done()
 			s.Close("manager_shutdown")
+			<-s.Done()
 		}(s)
 	}
 	wg.Wait()

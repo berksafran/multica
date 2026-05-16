@@ -228,16 +228,21 @@ func (s *PtySession) waitLoop() {
 	// <-stop, but never racing with close(s.output).
 	s.wg.Wait()
 
-	// Best-effort exit delivery (buffered chan of 1; reader may be gone).
+	// Finalize order is load-bearing: external waiters use `<-Done()` as
+	// a signal that the session is fully torn down AND deregistered from
+	// the manager. The sequence must be:
+	//   ExitC → close(output) → onClose/deregister → close(done)
+	// so that any consumer doing `<-Done(); manager.Get(id)` after a
+	// teardown is guaranteed to observe ErrSessionNotFound.
 	select {
 	case s.exit <- ExitInfo{ExitCode: code, Reason: reason}:
 	default:
 	}
 	close(s.output)
-	close(s.done)
 	if s.onClose != nil {
 		s.onClose(s.id)
 	}
+	close(s.done)
 }
 
 func (s *PtySession) idleLoop() {
