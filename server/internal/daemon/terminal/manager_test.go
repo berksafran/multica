@@ -503,6 +503,100 @@ func TestManager_CloseTearsDownAllSessions(t *testing.T) {
 	}
 }
 
+func TestSession_CloseWithFullOutputBufferDoesNotPanic(t *testing.T) {
+	// Regression: Close used to race with readLoop's "output <- chunk"
+	// when the channel was full. waitLoop closed output unconditionally,
+	// which could panic on send-to-closed-channel. The new lifecycle
+	// has waitLoop wait on a WaitGroup so readLoop's blocked send
+	// unblocks via <-stop before the close runs.
+	f := newFixture(t)
+	defer f.mgr.Close()
+	// Override on the existing spawner so newFixture's wiring (and
+	// f.spawner.lastRequest tracking) still works.
+	f.spawner.make = func(tt *testing.T, req SpawnRequest) (*fakePTY, error) {
+		p := newFakePTY(tt, req.Cols, req.Rows)
+		// Give the child-side queue plenty of room so the test can
+		// saturate the *session* output buffer before childToClient
+		// back-pressures the producer goroutine.
+		p.childToClient = make(chan []byte, 256)
+		return p, nil
+	}
+
+	sess, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	pty := f.lastPTY(t)
+
+	// Pump enough chunks to fill session.output (cap 64) and queue more
+	// on childToClient; readLoop ends up blocked on output <- chunk.
+	// Don't drain sess.Output() — that's the whole point. Producer runs
+	// to completion (and exits) BEFORE Close, otherwise producer's send
+	// races Close's pty.Close which closes childToClient.
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		for i := 0; i < 200; i++ {
+			select {
+			case pty.childToClient <- []byte("x"):
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}()
+	<-producerDone
+
+	// Should not panic, should not hang.
+	sess.Close("user_requested")
+
+	select {
+	case <-sess.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done did not converge after Close with saturated output buffer")
+	}
+
+	if _, err := f.mgr.Get(sess.ID()); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("session not deregistered after Close")
+	}
+
+	// ExitC must have fired before Done — required by the Output() doc
+	// contract ("channel closes after the child exits and a value has
+	// been delivered on ExitC()").
+	select {
+	case info := <-sess.ExitC():
+		if info.Reason != "user_requested" {
+			t.Errorf("exit reason = %q, want user_requested", info.Reason)
+		}
+	default:
+		t.Error("ExitC was empty after Done — finalize order violated")
+	}
+}
+
+func TestManager_OpenPropagatesUnsupportedOS(t *testing.T) {
+	// Regression: Manager.Open used fmt.Errorf("%w: %v", ErrSpawnFailed, err)
+	// which swallowed the inner sentinel. The protocol layer needs
+	// errors.Is to match both ErrSpawnFailed and ErrUnsupportedOS so it
+	// can map to terminal.error code "unsupported_os" instead of a
+	// generic "spawn_failed". Switched to double-%w; both must match.
+	f := newFixture(t)
+	defer f.mgr.Close()
+
+	f.spawner.make = func(_ *testing.T, _ SpawnRequest) (*fakePTY, error) {
+		return nil, ErrUnsupportedOS
+	}
+
+	_, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"})
+	if err == nil {
+		t.Fatal("Open returned nil err with failing spawner")
+	}
+	if !errors.Is(err, ErrUnsupportedOS) {
+		t.Errorf("errors.Is(err, ErrUnsupportedOS) = false; err = %v", err)
+	}
+	if !errors.Is(err, ErrSpawnFailed) {
+		t.Errorf("errors.Is(err, ErrSpawnFailed) = false; err = %v", err)
+	}
+}
+
 func TestSession_WriteUpdatesLastIO(t *testing.T) {
 	f := newFixture(t, func(c *ManagerConfig) {
 		c.IdleTimeout = 30 * time.Minute

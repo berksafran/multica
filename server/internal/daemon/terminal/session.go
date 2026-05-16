@@ -32,8 +32,15 @@ type PtySession struct {
 	output      chan []byte
 	exit        chan ExitInfo
 	done        chan struct{}
+	stop        chan struct{}
+	stopOnce    sync.Once
 	closing     bool
 	closeReason string
+
+	// wg tracks readLoop and idleLoop. waitLoop is the finalizer: it
+	// waits on wg before closing output/done so we never close the
+	// output channel while readLoop is mid-send.
+	wg sync.WaitGroup
 
 	now         func() time.Time
 	idleTimeout time.Duration
@@ -82,7 +89,8 @@ func (s *PtySession) Output() <-chan []byte { return s.output }
 // ExitC fires once when the child exits. After that, Output() closes.
 func (s *PtySession) ExitC() <-chan ExitInfo { return s.exit }
 
-// Done returns a channel closed when the session is fully torn down.
+// Done returns a channel closed when the session is fully torn down
+// (all goroutines exited, registry deregistered).
 func (s *PtySession) Done() <-chan struct{} { return s.done }
 
 // Write forwards bytes to the PTY stdin. Returns the byte count actually
@@ -124,6 +132,12 @@ func (s *PtySession) Size() (uint16, uint16) {
 
 // Close tears down the session. Subsequent calls are no-ops. The
 // reason is recorded for audit logging and the terminal.exit payload.
+//
+// Close only initiates teardown — signals stop, closes the PTY, returns.
+// waitLoop is the actual finalizer: it waits for readLoop + idleLoop
+// to exit (via wg) before closing output/done. That ordering is what
+// makes "Close while output buffer is full" safe — readLoop's blocked
+// send unblocks on <-stop, and only then does the output channel close.
 func (s *PtySession) Close(reason string) {
 	s.mu.Lock()
 	if s.closing {
@@ -135,22 +149,32 @@ func (s *PtySession) Close(reason string) {
 	pty := s.pty
 	s.mu.Unlock()
 
+	s.stopOnce.Do(func() { close(s.stop) })
+
 	if pty != nil {
+		// pty.Close on the unix spawner runs SIGHUP → grace → SIGKILL.
+		// It's idempotent (sync.Once), so the second call from waitLoop's
+		// finalizer is a no-op.
 		_ = pty.Close()
 	}
 }
 
-// start kicks off the reader and exit-watch goroutines. Manager.Open
-// is the only caller.
+// start kicks off the reader, exit-watch, and (optional) idle
+// goroutines. Manager.Open is the only caller. wg.Add runs
+// synchronously before waitLoop is spawned so wg.Wait sees the
+// correct count even if Close fires immediately.
 func (s *PtySession) start() {
+	s.wg.Add(1)
 	go s.readLoop()
-	go s.waitLoop()
 	if s.idleTimeout > 0 {
+		s.wg.Add(1)
 		go s.idleLoop()
 	}
+	go s.waitLoop()
 }
 
 func (s *PtySession) readLoop() {
+	defer s.wg.Done()
 	buf := make([]byte, 4096)
 	for {
 		n, err := s.pty.Read(buf)
@@ -159,15 +183,11 @@ func (s *PtySession) readLoop() {
 			copy(chunk, buf[:n])
 			s.mu.Lock()
 			s.lastIO = s.now()
-			closing := s.closing
 			s.mu.Unlock()
 			select {
 			case s.output <- chunk:
-			case <-s.done:
+			case <-s.stop:
 				return
-			}
-			if closing {
-				// keep draining until EOF so the consumer gets the final bytes
 			}
 		}
 		if err != nil {
@@ -190,10 +210,25 @@ func (s *PtySession) waitLoop() {
 		} else {
 			reason = "exited"
 		}
+		s.closeReason = reason
 	}
 	s.closing = true
 	s.mu.Unlock()
 
+	// Ensure the PTY fd is closed so readLoop's pty.Read returns EOF.
+	// pty.Close is idempotent (sync.Once on the unix spawner).
+	_ = s.pty.Close()
+
+	// Signal stop so idleLoop and any blocked send in readLoop exit.
+	s.stopOnce.Do(func() { close(s.stop) })
+
+	// Wait for readLoop + idleLoop before closing output/done. This is
+	// the invariant that prevents "send on closed channel" panics when
+	// output is full: readLoop is either past its send or unblocked via
+	// <-stop, but never racing with close(s.output).
+	s.wg.Wait()
+
+	// Best-effort exit delivery (buffered chan of 1; reader may be gone).
 	select {
 	case s.exit <- ExitInfo{ExitCode: code, Reason: reason}:
 	default:
@@ -206,9 +241,10 @@ func (s *PtySession) waitLoop() {
 }
 
 func (s *PtySession) idleLoop() {
+	defer s.wg.Done()
 	// Sample at IdleTimeout/4 so reaction time is bounded but ticks
-	// stay cheap even with many sessions. Manager.CheckIdle catches
-	// anything this loop misses.
+	// stay cheap with many sessions. Manager.CheckIdle catches anything
+	// this loop misses (e.g. when daemon's outer GC tick is coarser).
 	interval := s.idleTimeout / 4
 	if interval < time.Second {
 		interval = time.Second
@@ -217,11 +253,16 @@ func (s *PtySession) idleLoop() {
 	defer t.Stop()
 	for {
 		select {
-		case <-s.done:
+		case <-s.stop:
 			return
 		case <-t.C:
 			if s.now().Sub(s.LastIO()) >= s.idleTimeout {
-				s.Close("idle_timeout")
+				// Close calls pty.Close + waits for wg in waitLoop. If
+				// we ran it inline, waitLoop's wg.Wait would block on
+				// this goroutine, which can't exit until Close returns
+				// — deadlock. Spawning lets idleLoop return and
+				// decrement wg.
+				go s.Close("idle_timeout")
 				return
 			}
 		}

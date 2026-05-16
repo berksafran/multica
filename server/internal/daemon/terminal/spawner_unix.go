@@ -6,12 +6,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
 
-// realSpawner forks the shell on a PTY using creack/pty. Linux/macOS only;
-// Windows reaches the stub in spawner_windows.go and returns ErrUnsupportedOS.
+// closeGracePeriod is the window between SIGHUP and SIGKILL during a
+// Close. Long enough for interactive shells to run trap handlers and
+// flush state; short enough that closing a tab feels instant.
+const closeGracePeriod = 250 * time.Millisecond
+
+// realSpawner forks the shell on a PTY using creack/pty. Linux/macOS
+// only; Windows reaches the stub in spawner_windows.go and returns
+// ErrUnsupportedOS.
 type realSpawner struct{}
 
 func (realSpawner) Start(req SpawnRequest) (PTY, error) {
@@ -34,8 +44,11 @@ func (realSpawner) Start(req SpawnRequest) (PTY, error) {
 }
 
 type unixPTY struct {
-	cmd  *exec.Cmd
-	file *os.File
+	cmd       *exec.Cmd
+	file      *os.File
+	exited    atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (p *unixPTY) Read(b []byte) (int, error)  { return p.file.Read(b) }
@@ -47,19 +60,43 @@ func (p *unixPTY) Resize(cols, rows uint16) error {
 
 func (p *unixPTY) Wait() (int, error) {
 	err := p.cmd.Wait()
+	p.exited.Store(true)
 	if p.cmd.ProcessState != nil {
 		return p.cmd.ProcessState.ExitCode(), err
 	}
 	return -1, err
 }
 
+// Close terminates the child shell and releases the PTY master fd.
+// Closing a tab is a hangup, not an interrupt — so the signal path is
+// SIGHUP → brief grace → SIGKILL → file.Close, in that order:
+//
+//   - SIGHUP gives interactive shells a chance to run trap handlers,
+//     write history, etc. before the fd disappears.
+//   - The grace window is bounded; anything slower than that is stuck.
+//   - SIGKILL is the cliff for shells that ignore HUP.
+//   - file.Close releases the master fd last so the slave side keeps
+//     working during cleanup.
+//
+// Signals are sent to the negated pid so they hit the whole process
+// group. creack/pty starts the child as a session leader (Setsid), so
+// pid == pgid and any descendants the user spawned in the shell are
+// caught by the same kill.
+//
+// If the child already exited naturally (Wait returned), all signal
+// work is skipped — we only close the fd. That avoids a pointless
+// 250ms sleep in the natural-exit teardown path.
 func (p *unixPTY) Close() error {
-	if p.cmd.Process != nil {
-		// SIGHUP gives interactive shells a chance to clean up before the
-		// fd disappears. The Wait goroutine in PtySession picks up the
-		// subsequent exit and broadcasts it.
-		_ = p.cmd.Process.Signal(os.Interrupt)
-		_ = p.cmd.Process.Kill()
-	}
-	return p.file.Close()
+	p.closeOnce.Do(func() {
+		if p.cmd.Process != nil && !p.exited.Load() {
+			pid := p.cmd.Process.Pid
+			_ = syscall.Kill(-pid, syscall.SIGHUP)
+			time.Sleep(closeGracePeriod)
+			if !p.exited.Load() {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+		p.closeErr = p.file.Close()
+	})
+	return p.closeErr
 }

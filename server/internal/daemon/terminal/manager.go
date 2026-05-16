@@ -10,6 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// DefaultIdleTimeout is the recommended IdleTimeout for production
+// daemon wiring. Callers must set ManagerConfig.IdleTimeout to this
+// (or any positive duration) explicitly; zero/negative disables the
+// idle sweep.
+const DefaultIdleTimeout = 60 * time.Minute
+
 // TaskInfo is the subset of task state the Manager needs to set up a PTY.
 // The daemon resolves a TaskID into TaskInfo via TaskLookup at open time.
 type TaskInfo struct {
@@ -50,8 +56,11 @@ type ManagerConfig struct {
 	ShellArgs []string
 
 	// IdleTimeout closes a session that has had no I/O for this long.
-	// Defaults to 60 minutes. Set to zero to disable (intended for tests
-	// that exercise other lifecycle paths).
+	// Zero or negative disables the sweep entirely. Production daemon
+	// wiring should pass DefaultIdleTimeout explicitly; we intentionally
+	// don't default here so callers stay in control (the docs page for
+	// this package previously said "0 disables" while NewManager silently
+	// rewrote 0 to 60min — those two have to agree).
 	IdleTimeout time.Duration
 
 	// Spawner overrides PTY spawning. Defaults to ptyStartShell which
@@ -84,9 +93,7 @@ func NewManager(cfg ManagerConfig, lookup TaskLookup) *Manager {
 		cfg.ShellPath = "bash"
 		cfg.ShellArgs = []string{"-l"}
 	}
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = 60 * time.Minute
-	}
+	// IdleTimeout intentionally not defaulted — see ManagerConfig.
 	if cfg.Spawner == nil {
 		cfg.Spawner = realSpawner{}
 	}
@@ -141,7 +148,11 @@ func (m *Manager) Open(ctx context.Context, p OpenParams) (*PtySession, error) {
 		Started: startedAt,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrSpawnFailed, err)
+		// Double-%w so errors.Is matches both ErrSpawnFailed AND any
+		// sentinel the spawner surfaced (notably ErrUnsupportedOS from
+		// the windows stub — the protocol layer needs to distinguish
+		// "no PTY on this OS" from generic spawn failures).
+		return nil, fmt.Errorf("%w: %w", ErrSpawnFailed, err)
 	}
 
 	sess := &PtySession{
@@ -158,6 +169,7 @@ func (m *Manager) Open(ctx context.Context, p OpenParams) (*PtySession, error) {
 		output:      make(chan []byte, 64),
 		exit:        make(chan ExitInfo, 1),
 		done:        make(chan struct{}),
+		stop:        make(chan struct{}),
 		now:         m.cfg.Now,
 		idleTimeout: m.cfg.IdleTimeout,
 		startedAt:   startedAt,
@@ -215,9 +227,18 @@ func (m *Manager) Close() {
 		live = append(live, s)
 	}
 	m.mu.Unlock()
+	// Parallel: each session.Close blocks for the unix spawner's
+	// SIGHUP→grace→SIGKILL window. Running serially would multiply
+	// shutdown latency by N sessions.
+	var wg sync.WaitGroup
 	for _, s := range live {
-		s.Close("manager_shutdown")
+		wg.Add(1)
+		go func(s *PtySession) {
+			defer wg.Done()
+			s.Close("manager_shutdown")
+		}(s)
 	}
+	wg.Wait()
 }
 
 // CheckIdle walks every session and closes those whose idle interval
