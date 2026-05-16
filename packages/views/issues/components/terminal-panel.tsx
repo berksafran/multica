@@ -23,6 +23,16 @@ interface Envelope {
   payload: unknown;
 }
 
+// First-frame auth handshake. Mirrors the WSClient pattern in
+// packages/core/api/ws-client.ts and the CLI's terminal dialer in
+// server/internal/cli/ws.go: in token mode, the client sends
+// `{type:"auth", payload:{token}}` immediately after WS open and waits
+// for `auth_ack` before sending any other frame. Cookie-mode apps skip
+// this — the HttpOnly cookie travels with the WS upgrade and the server
+// has already resolved the user by the time onopen fires here.
+const MSG_AUTH = "auth";
+const MSG_AUTH_ACK = "auth_ack";
+
 interface OpenedPayload {
   request_id: string;
   session_id: string;
@@ -79,6 +89,18 @@ export function TerminalPanel({ issueId, workspaceId }: TerminalPanelProps) {
     workspaceId,
   ]);
 
+  // Snapshot the auth token at mount time. Desktop runs in token mode
+  // (CoreProvider in apps/desktop never sets cookieAuth), so the API
+  // client carries a bearer string after login; cookie-mode apps leave
+  // this null and the panel skips the first-frame auth handshake.
+  const authToken = useMemo(() => {
+    try {
+      return getApi().getToken();
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     if (!containerRef.current) return;
@@ -106,11 +128,25 @@ export function TerminalPanel({ issueId, workspaceId }: TerminalPanelProps) {
     setStatus("connecting");
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    // authed gates outbound frames during the first-frame handshake. In
+    // token mode it flips to true on receiving `auth_ack`; in cookie mode
+    // (no token) we start authed because the server has already resolved
+    // the user from the upgrade cookie.
+    let authed = authToken === null || authToken === "";
 
     ws.onopen = () => {
-      // Cookie auth carries the session by default. If we ever flip to
-      // token-mode (no cookie), this is where we'd send an `auth` frame
-      // mirroring realtime/ws-client.ts. Server falls back gracefully.
+      if (!authed) {
+        // Token mode: emit the first-frame auth envelope before anything
+        // else. The server's terminalFirstFrameAuth reader has a 10s
+        // deadline; without this frame the connection is closed before
+        // terminal.open is even attempted, which is the bug we're fixing.
+        ws.send(
+          JSON.stringify({
+            type: MSG_AUTH,
+            payload: { token: authToken },
+          }),
+        );
+      }
       setStatus("connected");
     };
 
@@ -138,6 +174,13 @@ export function TerminalPanel({ issueId, workspaceId }: TerminalPanelProps) {
         return;
       }
       switch (env.type) {
+        case MSG_AUTH_ACK: {
+          // Server accepted the bearer; from here on we behave the same
+          // as cookie mode (proceed to await terminal.opened, then start
+          // pumping data/resize/close frames).
+          authed = true;
+          break;
+        }
         case MSG_TERMINAL_OPENED: {
           const p = env.payload as OpenedPayload;
           sessionIdRef.current = p.session_id;

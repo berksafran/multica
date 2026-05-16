@@ -115,12 +115,33 @@ func (b *terminalBridge) handleOpen(p protocol.TerminalOpenPayload) {
 	b.sessions[sess.ID()] = &terminalRoute{session: sess, cancel: cancel, pumpDone: pumpDone}
 	b.mu.Unlock()
 
-	b.sendFrame(protocol.MessageTypeTerminalOpened, protocol.TerminalOpenedPayload{
+	// terminal.opened is the handshake frame — the server proxy stays in the
+	// "no session_id yet" state until it sees us, so dropping it on a full
+	// writer would orphan the freshly spawned PTY: the proxy hits its 5s
+	// open timeout and closes itself with no session_id to send
+	// terminal.close on, leaving the daemon-side session alive until the
+	// idle sweep (and pinning the GC active-env mark for that whole window).
+	// We must NOT treat this frame as a droppable control frame.
+	if !b.sendFrame(protocol.MessageTypeTerminalOpened, protocol.TerminalOpenedPayload{
 		RequestID: p.RequestID,
 		SessionID: sess.ID(),
 		WorkDir:   sess.WorkDir(),
 		Shell:     sess.Shell(),
-	})
+	}) {
+		// Roll the half-open session back: cancel the pump context (no pump
+		// has been started yet, but be explicit so the contract holds if a
+		// future change starts the pump before this branch), drop the route
+		// from the map, and close the session so waitLoop tears the PTY
+		// down. The server proxy will surface the failure via its own open
+		// timeout.
+		cancel()
+		close(pumpDone)
+		b.mu.Lock()
+		delete(b.sessions, sess.ID())
+		b.mu.Unlock()
+		sess.Close("opened_enqueue_failed")
+		return
+	}
 
 	go func() {
 		defer close(pumpDone)
@@ -270,20 +291,27 @@ func (b *terminalBridge) closeAll(reason string) {
 	}
 }
 
-func (b *terminalBridge) sendFrame(msgType string, payload any) {
+// sendFrame marshals and enqueues a single terminal.* frame on the
+// non-blocking send path. Returns true iff the frame made it into the
+// writer queue. Callers MUST check the return value when the frame is
+// part of an irreversible handshake (terminal.opened) — see handleOpen
+// for the rollback path.
+func (b *terminalBridge) sendFrame(msgType string, payload any) bool {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		b.logger.Debug("terminal frame marshal failed", "error", err, "type", msgType)
-		return
+		return false
 	}
 	frame, err := json.Marshal(protocol.Message{Type: msgType, Payload: raw})
 	if err != nil {
 		b.logger.Debug("terminal envelope marshal failed", "error", err, "type", msgType)
-		return
+		return false
 	}
 	if !b.send(frame) {
 		b.logger.Debug("terminal frame dropped: ws disconnected or backed up", "type", msgType)
+		return false
 	}
+	return true
 }
 
 func (b *terminalBridge) sendError(requestID, sessionID, code, message string) {

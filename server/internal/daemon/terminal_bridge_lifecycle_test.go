@@ -127,6 +127,91 @@ func TestTerminalBridge_DataBackpressureNoSilentDrop(t *testing.T) {
 	}
 }
 
+// TestTerminalBridge_OpenedEnqueueFailureClosesSession pins Phase 4
+// Round 2 finding 2: the terminal.opened handshake frame must NOT be
+// treated as a droppable control frame. If the daemon WS writer queue is
+// saturated at the moment we'd ack a fresh PTY back to the server proxy,
+// the daemon must roll the half-open session back instead of leaving an
+// orphaned PTY that the proxy will never address (the proxy gives up
+// after its 5s open timeout without a session_id, so it can't even send
+// terminal.close).
+//
+// The shape of the test:
+//
+//   - send returns false (saturated writer) for terminal.opened.
+//   - The bridge handles terminal.open: it spawns the PTY, tries to ack,
+//     observes the drop, and tears the session down.
+//   - We assert that the manager has zero live sessions after the bridge
+//     processes the open — i.e., the orphaned-session leak is gone.
+//
+// Before the fix, manager.Sessions() would still report 1 live session
+// (and pinned active-env mark with it) and the only thing that would
+// eventually clean it up was the idle sweep.
+func TestTerminalBridge_OpenedEnqueueFailureClosesSession(t *testing.T) {
+	// Sender that ALWAYS reports drop on the non-blocking send path. This
+	// is the worst-case version of "writer queue is full and we can't
+	// enqueue another control frame right now" — the previous code would
+	// silently log and move on, leaving the session hanging.
+	dropSend := func(_ []byte) bool { return false }
+	// sendCtx is irrelevant here (no PTY data is going to flow), but the
+	// bridge insists on a non-nil fn; pass through to dropSend so the
+	// shape matches production.
+	dropSendCtx := func(_ context.Context, _ []byte) bool { return false }
+
+	pty := newFakeBridgePTY(80, 24)
+	spawner := &stubSpawner{pty: pty}
+	mgr := terminal.NewManager(terminal.ManagerConfig{
+		Spawner: spawner,
+		Logger:  slog.Default(),
+	}, nil)
+	defer mgr.Close()
+
+	bridge := newTerminalBridge(mgr, slog.Default(), dropSend, dropSendCtx)
+
+	openPayload, err := json.Marshal(protocol.TerminalOpenPayload{
+		RequestID:   "req-drop",
+		TaskID:      "task-drop",
+		WorkspaceID: "ws-drop",
+		WorkDir:     t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	})
+	if err != nil {
+		t.Fatalf("marshal open: %v", err)
+	}
+
+	bridge.handleFrame(protocol.MessageTypeTerminalOpen, openPayload)
+
+	// Spawn definitely happened — the bug we are guarding against is
+	// "spawn succeeded, ack dropped, session orphaned".
+	if spawner.callCount() != 1 {
+		t.Fatalf("spawner.callCount = %d, want 1 (open path should still spawn the PTY before attempting the ack)", spawner.callCount())
+	}
+
+	// The session must be torn down within a tight deadline. Manager
+	// reports an empty Sessions() list once waitLoop has finalized the
+	// closure triggered by sess.Close("opened_enqueue_failed").
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(mgr.Sessions()) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := mgr.Sessions(); len(got) != 0 {
+		t.Fatalf("manager still has %d session(s) after dropped terminal.opened — orphan regressed", len(got))
+	}
+
+	// Bridge's internal route map must be empty too — otherwise a later
+	// terminal.close or closeAll would dereference a stale route.
+	bridge.mu.Lock()
+	routes := len(bridge.sessions)
+	bridge.mu.Unlock()
+	if routes != 0 {
+		t.Fatalf("bridge.sessions still has %d route(s) — half-open rollback didn't unlink", routes)
+	}
+}
+
 // TestTerminalBridge_TeardownDoesNotPanicOnInFlightSend pins Phase 2
 // review blocker 1: when the daemonws connection drops while a terminal
 // pump is mid-send, the teardown must NOT cause `send on closed channel`.

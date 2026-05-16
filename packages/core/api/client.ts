@@ -255,6 +255,16 @@ export class ApiClient {
     this.token = token;
   }
 
+  // getToken exposes the in-memory bearer for callers that must construct
+  // their own auth handshake — concretely, the Desktop TerminalPanel,
+  // which opens a WebSocket directly (no ApiClient.fetch wrapper) and has
+  // to send a token first-frame `auth` message in token mode. Cookie-mode
+  // apps never call setToken, so this returns null and the panel falls
+  // through to the cookie path.
+  getToken(): string | null {
+    return this.token;
+  }
+
   private readCsrfToken(): string | null {
     if (typeof document === "undefined") return null;
     const match = document.cookie
