@@ -220,6 +220,119 @@ func TestWorkspaceSyncHandlerReloadsCredentialsAndRegistersNewWorkspace(t *testi
 	}
 }
 
+func TestWorkspaceSyncHandlerPreservesPATWorkspacesWhenAddingDaemonTokenWorkspace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(stubAgentVersion(t))
+
+	const (
+		daemonID     = "daemon-mixed-sync-test"
+		oldWorkspace = "ws-old"
+		newWorkspace = "ws-new"
+		patToken     = "mul_legacy_pat"
+		daemonToken  = "mdt_new_workspace"
+	)
+	var listCalls int32
+	var registerCalls int32
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/workspaces":
+			atomic.AddInt32(&listCalls, 1)
+			if got := r.Header.Get("Authorization"); got != "Bearer "+patToken {
+				t.Errorf("ListWorkspaces Authorization = %q, want PAT", got)
+				http.Error(w, "bad auth", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]WorkspaceInfo{{ID: oldWorkspace, Name: "Old Workspace"}})
+		case "/api/daemon/register":
+			atomic.AddInt32(&registerCalls, 1)
+			if got := r.Header.Get("Authorization"); got != "Bearer "+daemonToken {
+				t.Errorf("Register Authorization = %q, want daemon token", got)
+				http.Error(w, "bad auth", http.StatusUnauthorized)
+				return
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode register request: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if body["workspace_id"] != newWorkspace {
+				t.Errorf("workspace_id = %v, want %s", body["workspace_id"], newWorkspace)
+				http.Error(w, "bad workspace", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(RegisterResponse{
+				Runtimes:     []Runtime{{ID: "rt-new", Name: "Claude", Provider: "claude", Status: "online"}},
+				ReposVersion: "v1",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(api.Close)
+
+	if err := cli.SaveCLIConfig(cli.CLIConfig{ServerURL: api.URL, Token: patToken}); err != nil {
+		t.Fatalf("save CLI config: %v", err)
+	}
+	if err := cli.SaveDaemonCredentials(cli.DaemonCredentialStore{
+		Version: 1,
+		Credentials: []cli.DaemonCredential{{
+			ServerURL:   api.URL,
+			WorkspaceID: newWorkspace,
+			DaemonID:    daemonID,
+			DaemonToken: daemonToken,
+			IssuedAt:    time.Now().UTC().Format(time.RFC3339),
+		}},
+	}, ""); err != nil {
+		t.Fatalf("save daemon credentials: %v", err)
+	}
+
+	d := New(Config{
+		ServerBaseURL:  api.URL,
+		DaemonID:       daemonID,
+		DeviceName:     "dev",
+		CLIVersion:     "test",
+		Agents:         map[string]AgentEntry{"claude": {Path: "claude"}},
+		WorkspacesRoot: t.TempDir(),
+	}, slog.Default())
+	oldState := newWorkspaceState(oldWorkspace, []string{"rt-old"}, "v0", nil, nil)
+	d.workspaces[oldWorkspace] = oldState
+	d.runtimeIndex["rt-old"] = Runtime{ID: "rt-old", Provider: "claude", Status: "online"}
+	d.runtimeWorkspace["rt-old"] = oldWorkspace
+
+	rec := httptest.NewRecorder()
+	d.workspaceSyncHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/workspaces/sync", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync handler: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&listCalls); got != 1 {
+		t.Fatalf("ListWorkspaces calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&registerCalls); got != 1 {
+		t.Fatalf("register calls = %d, want 1", got)
+	}
+	if got := d.tokenForCtx(WithCallWorkspaceID(context.Background(), oldWorkspace)); got != patToken {
+		t.Fatalf("old workspace token = %q, want PAT", got)
+	}
+	if got := d.tokenForCtx(WithCallWorkspaceID(context.Background(), newWorkspace)); got != daemonToken {
+		t.Fatalf("new workspace token = %q, want daemon token", got)
+	}
+
+	d.mu.Lock()
+	gotOld := d.workspaces[oldWorkspace]
+	gotNew := d.workspaces[newWorkspace]
+	d.mu.Unlock()
+	if gotOld != oldState {
+		t.Fatalf("old PAT workspace state was replaced or removed: got %#v want original", gotOld)
+	}
+	if gotNew == nil || len(gotNew.runtimeIDs) != 1 || gotNew.runtimeIDs[0] != "rt-new" {
+		t.Fatalf("new workspace state = %#v, want registered runtime rt-new", gotNew)
+	}
+}
+
 func TestHealthHandlerRespondsWhileTaskRepoLookupWaits(t *testing.T) {
 	const workspaceID = "ws-health"
 	const repoURL = "https://github.com/org/repo.git"

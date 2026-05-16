@@ -384,6 +384,16 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		takeover, err := daemonIDOwnedByAnotherMember(r.Context(), h.Queries, wsUUID, req.DaemonID, member)
+		if err != nil {
+			slog.Error("daemon register: PAT takeover check failed", "error", err, "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID)
+			writeError(w, http.StatusInternalServerError, "failed to register runtime")
+			return
+		}
+		if takeover {
+			writeError(w, http.StatusForbidden, "daemon_id already belongs to another member")
+			return
+		}
 		ownerID = member.UserID
 		// PAT path covers two install shapes we can distinguish: Desktop's
 		// embedded daemon (launched_by=="desktop") vs the legacy Advanced

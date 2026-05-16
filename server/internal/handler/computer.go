@@ -165,20 +165,14 @@ func (h *Handler) DeleteComputer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Permission gate: at least one of the runtimes under this daemon must
-	// be editable by the caller. canEditRuntime treats owner/admin as
-	// blanket-allowed and members as owner-only — matching the single-row
-	// DELETE /api/runtimes/<id> behavior.
-	editable := false
+	// Permission gate: every runtime under this daemon must be editable by
+	// the caller. A daemon-scoped delete removes the whole group, so a mixed
+	// owner group must not be removable just because the caller owns one row.
 	for _, rt := range group {
-		if canEditRuntime(member, rt) {
-			editable = true
-			break
+		if !canEditRuntime(member, rt) {
+			writeError(w, http.StatusForbidden, "you can only remove computers you own")
+			return
 		}
-	}
-	if !editable {
-		writeError(w, http.StatusForbidden, "you can only remove computers you own")
-		return
 	}
 
 	// D2 (§6.3): block delete when any runtime under this daemon is still

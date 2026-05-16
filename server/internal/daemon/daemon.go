@@ -91,17 +91,22 @@ type Daemon struct {
 	reloading        sync.Mutex         // prevents concurrent workspace syncs
 	runtimeSet       *runtimeSetWatcher // multi-subscriber pub/sub for runtime-set changes
 
-	// authMode records how resolveAuth picked the credential. "daemon_token"
-	// means we loaded one or more mdt_ entries from the credentials store and
-	// must register each (workspace_id, daemon_id) pair directly — the
-	// ListWorkspaces endpoint requires mul_/JWT and 401s on mdt_. "pat" keeps
-	// the legacy mul_ flow that walks ListWorkspaces and registers each
-	// workspace it returns. Empty means resolveAuth has not run yet.
+	// authMode records how resolveAuth picked the primary credential.
+	// "daemon_token" means we loaded one or more mdt_ entries from the
+	// credentials store and must register each (workspace_id, daemon_id) pair
+	// directly. When a legacy mul_ PAT is also available, it stays available as
+	// patToken so existing PAT-discovered workspaces keep working during an
+	// Add Computer reload. "pat" keeps the legacy mul_ flow that walks
+	// ListWorkspaces and registers each workspace it returns. Empty means
+	// resolveAuth has not run yet.
 	authMode string
 	// workspaceTokens is the per-workspace mdt_ keyring (only populated in
 	// authMode=="daemon_token"). The client's TokenResolver reads this when
 	// the request ctx is tagged via WithCallWorkspaceID.
 	workspaceTokens map[string]string
+	// patToken is the legacy mul_/JWT credential loaded from CLI config. It is
+	// the primary token in PAT mode and a fallback in mixed mdt+PAT mode.
+	patToken string
 
 	versionsMu    sync.RWMutex      // guards agentVersions
 	agentVersions map[string]string // provider -> detected CLI version (set during registration)
@@ -745,6 +750,11 @@ func (d *Daemon) deregisterRuntimes() {
 // When both are missing, fail with a hint pointing at whichever flow the
 // user is most likely to be on.
 func (d *Daemon) resolveAuth() error {
+	cfg, cfgErr := cli.LoadCLIConfigForProfile(d.cfg.Profile)
+	if cfgErr != nil {
+		cfg = cli.CLIConfig{}
+	}
+
 	if store, err := cli.LoadDaemonCredentials(d.cfg.Profile); err == nil {
 		var matched []cli.DaemonCredential
 		for _, c := range store.Credentials {
@@ -758,26 +768,29 @@ func (d *Daemon) resolveAuth() error {
 		}
 		if len(matched) > 0 {
 			d.authMode = "daemon_token"
+			d.patToken = strings.TrimSpace(cfg.Token)
 			d.mu.Lock()
+			d.workspaceTokens = make(map[string]string, len(matched))
 			for _, c := range matched {
 				d.workspaceTokens[c.WorkspaceID] = c.DaemonToken
 			}
 			d.mu.Unlock()
 			// Resolver picks the per-workspace mdt_ tagged on the request
-			// context. Untagged ctx returns an empty string, which signals
-			// the client to send no Authorization header — that's safe
-			// because every authenticated call below this point is tagged
-			// via WithCallWorkspaceID.
+			// context. In mixed mdt+PAT mode it can also use the PAT for
+			// legacy ListWorkspaces calls and PAT-discovered workspaces.
 			d.client.SetTokenResolver(d.tokenForCtx)
 			// The task-wakeup WebSocket dials once with a static header (its
 			// runtime list cannot mix workspaces because the server scopes
-			// the connection to the auth'd workspace). Seed the static token
-			// to one credential so the single-workspace install-token install
-			// gets WS fast-path wakeups; the multi-workspace daemon falls
-			// back to polling for any workspace whose mdt_ isn't the seeded
-			// one, which still drains tasks just at the poll cadence.
-			d.client.SetToken(matched[0].DaemonToken)
-			d.logger.Info("authenticated", "via", "daemon_token", "workspaces", len(matched))
+			// the connection to the auth'd workspace). Prefer the PAT when
+			// present so legacy PAT workspaces keep the fast path; otherwise
+			// seed one mdt_ credential for single-workspace install-token
+			// installs. Other mdt_ workspaces still drain via polling.
+			if d.patToken != "" {
+				d.client.SetToken(d.patToken)
+			} else {
+				d.client.SetToken(matched[0].DaemonToken)
+			}
+			d.logger.Info("authenticated", "via", "daemon_token", "workspaces", len(matched), "pat_fallback", d.patToken != "")
 			d.logger.Debug("daemon token store loaded",
 				"profile", d.cfg.Profile,
 				"workspace_count", len(matched))
@@ -789,9 +802,8 @@ func (d *Daemon) resolveAuth() error {
 		d.logger.Warn("load daemon credentials", "error", err)
 	}
 
-	cfg, err := cli.LoadCLIConfigForProfile(d.cfg.Profile)
-	if err != nil {
-		return fmt.Errorf("load CLI config: %w", err)
+	if cfgErr != nil {
+		return fmt.Errorf("load CLI config: %w", cfgErr)
 	}
 	if cfg.Token == "" {
 		loginHint := "'multica login' or 'multica daemon start --install-token <mit_…>'"
@@ -802,6 +814,7 @@ func (d *Daemon) resolveAuth() error {
 		return fmt.Errorf("not authenticated: run %s first", loginHint)
 	}
 	d.authMode = "pat"
+	d.patToken = strings.TrimSpace(cfg.Token)
 	d.client.SetToken(cfg.Token)
 	d.logger.Info("authenticated", "via", "pat")
 	d.logger.Debug("auth token loaded", "profile", d.cfg.Profile, "token_len", len(cfg.Token))
@@ -816,6 +829,9 @@ func (d *Daemon) resolveAuth() error {
 func (d *Daemon) tokenForCtx(ctx context.Context) string {
 	wsID := CallWorkspaceIDFromContext(ctx)
 	if wsID == "" {
+		if d.patToken != "" {
+			return d.patToken
+		}
 		return ""
 	}
 	return d.tokenForWorkspace(wsID)
@@ -830,7 +846,10 @@ func (d *Daemon) tokenForWorkspace(wsID string) string {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.workspaceTokens[wsID]
+	if token := d.workspaceTokens[wsID]; token != "" {
+		return token
+	}
+	return d.patToken
 }
 
 // sameServer compares two server base URLs after trimming trailing slashes
@@ -1248,7 +1267,25 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context) error {
 			apiIDs[wsID] = ""
 		}
 		d.mu.Unlock()
-		d.logger.Debug("workspace sync: skipping ListWorkspaces (daemon_token mode)", "count", len(apiIDs))
+		if d.patToken != "" {
+			if workspaces, err := d.client.ListWorkspaces(apiCtx); err == nil {
+				for _, ws := range workspaces {
+					apiIDs[ws.ID] = ws.Name
+				}
+				d.logger.Debug("workspace sync: merged PAT workspaces", "count", len(workspaces), "total", len(apiIDs))
+			} else {
+				d.logger.Warn("workspace sync: PAT workspace discovery failed; preserving currently watched workspaces", "error", err)
+				d.mu.Lock()
+				for id := range d.workspaces {
+					if _, ok := apiIDs[id]; !ok {
+						apiIDs[id] = ""
+					}
+				}
+				d.mu.Unlock()
+			}
+		} else {
+			d.logger.Debug("workspace sync: skipping ListWorkspaces (daemon_token mode)", "count", len(apiIDs))
+		}
 	} else {
 		workspaces, err := d.client.ListWorkspaces(apiCtx)
 		if err != nil {
