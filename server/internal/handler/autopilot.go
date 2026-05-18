@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1067,20 +1065,6 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.AutopilotService.DispatchAutopilot(r.Context(), autopilot, pgtype.UUID{}, "manual", nil)
 	if err != nil {
-		var duplicate *issueguard.ActiveDuplicateError
-		if errors.As(err, &duplicate) {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"code":  "active_duplicate_issue",
-				"error": duplicate.Error(),
-				"issue": map[string]any{
-					"id":         duplicate.ID,
-					"identifier": duplicate.Identifier,
-					"title":      duplicate.Title,
-					"status":     duplicate.Status,
-				},
-			})
-			return
-		}
 		writeError(w, http.StatusInternalServerError, "failed to trigger autopilot: "+err.Error())
 		return
 	}
