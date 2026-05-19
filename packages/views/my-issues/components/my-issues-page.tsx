@@ -10,6 +10,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
 import { useQuery } from "@tanstack/react-query";
+import { agentListOptions } from "@multica/core/workspace/queries";
 import { filterIssues } from "../../issues/utils/filter";
 import { BOARD_STATUSES } from "@multica/core/issues/config";
 import { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
@@ -31,6 +32,7 @@ export function MyIssuesPage() {
   const user = useAuthStore((s) => s.user);
   const workspace = useCurrentWorkspace();
   const wsId = useWorkspaceId();
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
 
   const viewMode = useStore(myIssuesViewStore, (s) => s.viewMode);
   const statusFilters = useStore(myIssuesViewStore, (s) => s.statusFilters);
@@ -46,11 +48,15 @@ export function MyIssuesPage() {
     useIssueSelectionStore.getState().clear();
   }, [viewMode, scope]);
 
-  // Build server-side filter based on scope. The "agents" scope is the
-  // "My Agents / Squads" tab — it uses involves_user_id so the server expands
-  // it to "me + agents I own + squads I'm related to" in a single UNION
-  // query. See packages/core/types/api.ts for the full semantics and
-  // server/pkg/db/queries/issue.sql for the SQL.
+  // Build server-side filter based on scope
+  const myAgentIds = useMemo(() => {
+    if (!user) return [] as string[];
+    return agents
+      .filter((a) => a.owner_id === user.id)
+      .map((a) => a.id)
+      .sort();
+  }, [agents, user]);
+
   const filter: MyIssuesFilter = useMemo(() => {
     if (!user) return {};
     switch (scope) {
@@ -59,11 +65,11 @@ export function MyIssuesPage() {
       case "created":
         return { creator_id: user.id };
       case "agents":
-        return { involves_user_id: user.id };
+        return { assignee_ids: myAgentIds };
       default:
         return { assignee_id: user.id };
     }
-  }, [scope, user]);
+  }, [scope, user, myAgentIds]);
 
   const assigneeGroupFilter = useMemo<AssigneeGroupedIssuesFilter>(
     () => ({
