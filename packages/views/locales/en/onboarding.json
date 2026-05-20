@@ -179,19 +179,28 @@
     "add_more_hint": "Add more agents anytime. A small team of specialized agents beats one jack-of-all-trades.",
     "docs_link": "Creating your first agent →"
   },
-  "step_teammate": {
-    "eyebrow": "First teammate",
-    "headline": "Create your first teammate: Multica Helper",
-    "lede": "Multica Helper is a starter agent connected to {{runtime}}. It will open your first guided issue and help you learn the core workflow.",
-    "avatar_label": "Multica Helper avatar",
-    "name": "Multica Helper",
-    "role": "Onboarding guide",
-    "point_issue": "Starts from one onboarding issue",
-    "point_context": "Uses your workspace context and issue details",
-    "point_customize": "You can rename or replace it later",
-    "footer_hint": "We'll create one agent and one onboarding issue.",
-    "create_action": "Create Multica Helper",
-    "create_failed": "Failed to create Multica Helper"
+  "onboarding_helper_modal": {
+    "title": "Meet Multica Helper",
+    "subtitle": "Your first agent in this workspace. Pick something to assign as your first task — Helper will pick it up and reply on the issue.",
+    "cards": {
+      "intro": {
+        "title": "Introduce me to Multica",
+        "subtitle": "Have Helper walk you through what Multica is and how to work with agents.",
+        "prompt": "Introduce me to Multica. Explain what this workspace is, what agents do here, and what I should try first."
+      },
+      "assign": {
+        "title": "Show me how to assign an issue",
+        "subtitle": "Helper will demonstrate assignees, @mentions, and the issue thread by walking through this one.",
+        "prompt": "Show me how to assign an issue to an agent and how @mentions work. Use this issue as the worked example."
+      },
+      "second_agent": {
+        "title": "Help me create a second agent",
+        "subtitle": "Watch Helper spin up a new teammate from a template using the multica CLI.",
+        "prompt": "Help me create a second agent in this workspace. Ask me what kind of agent I want, then create it for me using the multica CLI."
+      }
+    },
+    "dismiss_error": "Dismiss",
+    "error_generic": "Could not set up Multica Helper. Check your connection and try again."
   },
   "step_workspace": {
     "eyebrow_first": "Your first workspace",
@@ -284,7 +293,8 @@
     "hint_selected": "Selected: {{name}}",
     "hint_pick": "Pick an agent runtime above to continue.",
     "hint_waiting": "Waiting for the first result…",
-    "hint_skip_or_refresh": "Refresh after installing one, or skip to enter your workspace."
+    "hint_skip_or_refresh": "Refresh after installing one, or skip to enter your workspace.",
+    "start_exploring": "Start exploring"
   },
   "step_platform": {
     "eyebrow": "Connect a computer",

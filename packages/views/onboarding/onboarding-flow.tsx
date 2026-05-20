@@ -8,7 +8,6 @@ import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import {
   bootstrapNoRuntimeOnboarding,
-  bootstrapRuntimeOnboarding,
   completeOnboarding,
   ONBOARDING_STEP_ORDER,
   saveQuestionnaire,
@@ -16,7 +15,7 @@ import {
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
 import { issueKeys } from "@multica/core/issues/queries";
-import { workspaceListOptions, workspaceKeys } from "@multica/core/workspace/queries";
+import { workspaceListOptions } from "@multica/core/workspace/queries";
 import type { AgentRuntime, Workspace } from "@multica/core/types";
 import { StepWelcome } from "./steps/step-welcome";
 import { StepSource } from "./steps/step-source";
@@ -25,7 +24,6 @@ import { StepUseCase } from "./steps/step-use-case";
 import { StepWorkspace } from "./steps/step-workspace";
 import { StepRuntimeConnect } from "./steps/step-runtime-connect";
 import { StepPlatformFork } from "./steps/step-platform-fork";
-import { StepTeammate } from "./steps/step-teammate";
 import { useT } from "../i18n";
 
 const EMPTY_QUESTIONNAIRE: QuestionnaireAnswers = {
@@ -63,9 +61,18 @@ function mergeQuestionnaire(
  * Shell's onComplete contract:
  *   onComplete(workspace?, issueId?) — if an issue id is present, navigate
  *   straight into that onboarding issue; otherwise navigate into the
- *   workspace issues list. Runtime-connected onboarding creates one
- *   Multica Helper agent plus one issue; runtime-skipped onboarding creates one
- *   self-serve install-runtime issue.
+ *   workspace issues list.
+ *
+ * Three exit shapes feed onComplete:
+ *   - Skip-existing (Welcome): completeOnboarding marks onboarded; navigate
+ *     to the existing workspace's issue list.
+ *   - Runtime-skipped (no runtime on Step 3): bootstrapNoRuntimeOnboarding
+ *     marks onboarded + seeds install-runtime issue; navigate to that issue.
+ *   - Runtime-connected (runtime picked on Step 3): NO bootstrap call —
+ *     just store the runtime and navigate to the workspace. The user
+ *     hits the workspace OnboardingHelperModal (which gates on
+ *     `me.onboarded_at == null`); selecting a starter prompt there is what
+ *     finally calls bootstrapRuntimeOnboarding + marks onboarded.
  */
 export function OnboardingFlow({
   onComplete,
@@ -97,7 +104,6 @@ export function OnboardingFlow({
 
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
 
   // Fetched at Step 0 + Step 2. Step 2 uses it to detect a pre-existing
   // workspace from an earlier abandoned onboarding (so StepWorkspace shows
@@ -203,7 +209,9 @@ export function OnboardingFlow({
       if (!rt) {
         // No runtime -> no agent execution yet. Create one focused
         // install-runtime onboarding issue so the user lands on a
-        // concrete next step.
+        // concrete next step. (This path DOES mark onboarded — the user
+        // explicitly opted out of the runtime branch, so the workspace
+        // OnboardingHelperModal should not pop for them either.)
         try {
           const result = await bootstrapNoRuntimeOnboarding(workspace.id);
           await qc.invalidateQueries({ queryKey: issueKeys.all(workspace.id) });
@@ -216,31 +224,18 @@ export function OnboardingFlow({
         return;
       }
 
-      setRuntime(rt);
-      advanceFrom("runtime");
+      // Runtime picked. Exit the onboarding flow into the workspace
+      // WITHOUT calling bootstrapRuntimeOnboarding — `onboarded_at` stays
+      // NULL so the workspace OnboardingHelperModal fires there. The
+      // modal owns the actual Helper-creation step (with a starter
+      // prompt the user picks from 3 cards), and fetches the workspace
+      // runtime list itself to know which runtime to bootstrap against
+      // — we don't need to thread `rt` through onComplete.
+      void rt;
+      onComplete(workspace, undefined);
     },
-    [workspace, qc, onComplete, t, advanceFrom],
+    [workspace, qc, onComplete, t],
   );
-
-  const handleCreateTeammate = useCallback(async () => {
-    if (!workspace || !runtime) return;
-
-    try {
-      const result = await bootstrapRuntimeOnboarding(workspace.id, runtime.id);
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: workspaceKeys.agents(workspace.id) }),
-        qc.invalidateQueries({ queryKey: issueKeys.all(workspace.id) }),
-      ]);
-      onComplete(workspace, result.issue_id || undefined);
-    } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? err.message
-          : t(($) => $.step_teammate.create_failed),
-      );
-      throw err;
-    }
-  }, [workspace, runtime, qc, onComplete, t]);
 
   const handleBack = useCallback((from: OnboardingStep) => {
     const idx = ONBOARDING_STEP_ORDER.indexOf(from);
@@ -335,16 +330,6 @@ export function OnboardingFlow({
         onNext={handleRuntimeNext}
         onBack={() => handleBack("runtime")}
         cliInstructions={runtimeInstructions}
-      />
-    );
-  }
-
-  if (step === "teammate" && workspace && runtime) {
-    return (
-      <StepTeammate
-        runtime={runtime}
-        onCreate={handleCreateTeammate}
-        onBack={() => handleBack("teammate")}
       />
     );
   }

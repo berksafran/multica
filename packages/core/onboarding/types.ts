@@ -5,7 +5,6 @@ export type OnboardingStep =
   | "use_case"
   | "workspace"
   | "runtime"
-  | "teammate"
   | "agent"
   | "first_issue";
 

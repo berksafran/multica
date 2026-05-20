@@ -201,12 +201,24 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Becoming a workspace member is the physical event that "completes" onboarding —
-	// keep this atomic with CreateMember so `member` and `onboarded_at`
-	// can never disagree. COALESCE in MarkUserOnboarded keeps it idempotent.
-	updatedUser, err := qtx.MarkUserOnboarded(r.Context(), parseUUID(userID))
+	// NOTE: CreateWorkspace deliberately does NOT mark the user as
+	// onboarded. The `onboarded_at` flag is reserved for the path that
+	// creates the user's first Multica Helper agent — either
+	// BootstrapOnboardingRuntime (via the workspace OnboardingHelperModal),
+	// BootstrapOnboardingNoRuntime (explicit skip-runtime), AcceptInvitation
+	// (invitee joining an existing workspace), or CompleteOnboarding's
+	// skip_existing / cloud_waitlist exits. This decouples "the user has a
+	// workspace" from "the user has finished setup", letting the workspace
+	// layout render a blocking OnboardingHelperModal for users who reach
+	// the workspace UI without a Helper.
+	//
+	// Older guard comments saying "un-onboarded but in workspace is
+	// physically impossible" are now stale. The web `useDashboardGuard`
+	// and desktop `App.tsx` overlay guards already gate on workspace
+	// presence (not onboarded), so they tolerate this mid-flow state.
+	currentUser, err := qtx.GetUser(r.Context(), parseUUID(userID))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to mark user onboarded")
+		writeError(w, http.StatusInternalServerError, "failed to load user")
 		return
 	}
 
@@ -216,14 +228,14 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// dialog on older desktop builds that still render it when the column
 	// is NULL.
 	seededIssue, seededIssueCreated, err := ensureNoRuntimeOnboardingIssue(
-		r.Context(), qtx, ws.ID, parseUUID(userID), updatedUser.Language,
+		r.Context(), qtx, ws.ID, parseUUID(userID), currentUser.Language,
 	)
 	if err != nil {
 		slog.Warn("create workspace: ensure install-runtime issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(ws.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to seed onboarding issue")
 		return
 	}
-	if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), updatedUser.StarterContentState); err != nil {
+	if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), currentUser.StarterContentState); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record starter content state")
 		return
 	}

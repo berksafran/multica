@@ -402,6 +402,10 @@ export class ApiClient {
   async bootstrapOnboardingRuntime(payload: {
     workspace_id: string;
     runtime_id: string;
+    /** Optional: user's chosen first task from the workspace
+     *  OnboardingHelperModal. Becomes the seeded onboarding issue's
+     *  description; server falls back to a generic message when omitted. */
+    starter_prompt?: string;
   }): Promise<OnboardingRuntimeBootstrapResponse> {
     const raw = await this.fetch<unknown>(
       "/api/me/onboarding/runtime-bootstrap",

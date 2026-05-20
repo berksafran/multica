@@ -426,9 +426,19 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Accepting an invite is the physical event that "completes" onboarding for an
-	// invitee — atomic with CreateMember so the invariant
-	// "member row exists ↔ onboarded_at != null" cannot be violated.
+	// Accepting an invite marks the invitee as onboarded — they are
+	// joining an existing workspace someone else set up, so the workspace
+	// OnboardingHelperModal must NOT fire for them. (CreateWorkspace no
+	// longer marks onboarded — the workspace owner's mark happens later
+	// in BootstrapOnboardingRuntime when they pick a starter task via the
+	// modal — but invitees skip that whole flow.)
+	//
+	// DO NOT REMOVE this MarkUserOnboarded call without simultaneously
+	// updating the OnboardingHelperModal trigger in packages/views/workspace/
+	// to also exclude invited-only members. The current trigger is purely
+	// `me.onboarded_at == null`, so dropping this mark would pop the modal
+	// in front of an invitee in someone else's workspace.
+	//
 	// COALESCE in MarkUserOnboarded keeps this idempotent for users joining
 	// additional workspaces after their first.
 	firstOnboardingCompletion := !user.OnboardedAt.Valid

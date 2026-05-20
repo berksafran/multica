@@ -179,19 +179,28 @@
     "add_more_hint": "随时添加更多智能体。一支专长各异的小团队胜过一个万能选手。",
     "docs_link": "创建第一个智能体 →"
   },
-  "step_teammate": {
-    "eyebrow": "第一个队友",
-    "headline": "创建你的第一个队友：Multica Helper",
-    "lede": "Multica Helper 是连接到 {{runtime}} 的入门智能体。它会打开一个上手引导 issue，带你走完核心流程。",
-    "avatar_label": "Multica Helper 头像",
-    "name": "Multica Helper",
-    "role": "上手引导",
-    "point_issue": "只从一个上手引导 issue 开始",
-    "point_context": "读取工作区上下文和 issue 详情",
-    "point_customize": "之后可以改名或替换",
-    "footer_hint": "我们会创建一个智能体和一个上手引导 issue。",
-    "create_action": "创建 Multica Helper",
-    "create_failed": "创建 Multica Helper 失败"
+  "onboarding_helper_modal": {
+    "title": "认识 Multica Helper",
+    "subtitle": "你在这个工作区的第一个 agent。挑一件事交给它当作第一个任务——它会在 issue 里接手并回复你。",
+    "cards": {
+      "intro": {
+        "title": "介绍一下 Multica",
+        "subtitle": "让 Helper 给你讲讲 Multica 是什么，以及怎么和 agent 协作。",
+        "prompt": "给我介绍一下 Multica。讲讲这个工作区是什么、agent 在这里能做什么、我应该先试什么。"
+      },
+      "assign": {
+        "title": "教我怎么把 issue 派给 agent",
+        "subtitle": "Helper 会用这个 issue 当例子，演示 assignee、@mention 和评论串怎么用。",
+        "prompt": "教我怎么把一个 issue 派给 agent，还有 @mention 是怎么工作的。直接用这个 issue 当例子讲清楚。"
+      },
+      "second_agent": {
+        "title": "帮我再创建一个 agent",
+        "subtitle": "看 Helper 用 multica CLI 从模板创建一个新队友。",
+        "prompt": "帮我在这个工作区再创建一个 agent。先问我想要什么类型的 agent，然后用 multica CLI 帮我建出来。"
+      }
+    },
+    "dismiss_error": "知道了",
+    "error_generic": "无法创建 Multica Helper，请检查网络后重试。"
   },
   "step_workspace": {
     "eyebrow_first": "你的第一个工作区",
@@ -283,7 +292,8 @@
     "hint_selected": "已选择：{{name}}",
     "hint_pick": "在上方选一个 agent 运行时继续。",
     "hint_waiting": "等待第一个结果...",
-    "hint_skip_or_refresh": "装好后点刷新，或跳过进入工作区。"
+    "hint_skip_or_refresh": "装好后点刷新，或跳过进入工作区。",
+    "start_exploring": "开始探索"
   },
   "step_platform": {
     "eyebrow": "连接一台电脑",

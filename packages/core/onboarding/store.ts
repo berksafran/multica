@@ -57,14 +57,21 @@ export async function completeOnboarding(
  * Runtime-connected onboarding path. The server creates or reuses the
  * default Multica Helper agent and the single onboarding issue, then
  * marks onboarding complete.
+ *
+ * `starterPrompt` is the user's chosen first task (one of the three
+ * cards in the workspace OnboardingHelperModal). When provided, it
+ * becomes the seeded onboarding issue's description; when omitted
+ * (legacy callers), the server uses a generic fallback description.
  */
 export async function bootstrapRuntimeOnboarding(
   workspaceId: string,
   runtimeId: string,
+  starterPrompt?: string,
 ): Promise<{ workspace_id: string; agent_id: string; issue_id: string }> {
   const result = await api.bootstrapOnboardingRuntime({
     workspace_id: workspaceId,
     runtime_id: runtimeId,
+    ...(starterPrompt ? { starter_prompt: starterPrompt } : {}),
   });
   await useAuthStore.getState().refreshMe();
   return result;

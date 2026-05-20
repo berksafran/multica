@@ -120,17 +120,21 @@ function AppContent() {
 
   // Pre-workspace overlay routing for desktop. Mirrors the web entry-point
   // judgment in callback / login:
-  //   un-onboarded:
+  //   wsCount > 0                → no overlay, fall through to dashboard
+  //                                (workspace-layer OnboardingHelperModal
+  //                                handles un-onboarded mid-flow users)
+  //   un-onboarded + no workspace:
   //     pending invites on email → /invitations overlay
   //     no invites               → /onboarding overlay
-  //   already onboarded:
-  //     zero workspaces          → /workspaces/new overlay
-  //     ≥1 workspaces            → no overlay, fall through to dashboard
+  //   onboarded + no workspace   → /workspaces/new overlay
   //
-  // The "un-onboarded but in workspace" state is now physically impossible
-  // because backend transactions atomically set onboarded_at when a user
-  // joins the `member` table. Anyone with workspaces is by definition
-  // onboarded.
+  // "un-onboarded but in workspace" is now a valid mid-flow state:
+  // CreateWorkspace no longer marks onboarded — only BootstrapOnboardingRuntime
+  // does, via the workspace OnboardingHelperModal that fires inside the
+  // workspace shell. AcceptInvitation still marks (invitee path skips the
+  // modal). The `wsCount > 0 → no overlay` rule covers this: if the user
+  // has at least one workspace, we fall through to the dashboard and the
+  // workspace shell mounts the modal if needed.
   useEffect(() => {
     if (!user || !workspaceListFetched) return undefined;
     const { overlay, open } = useWindowOverlayStore.getState();

@@ -9,6 +9,7 @@ import {
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
+import { OnboardingHelperModal } from "@multica/views/workspace/onboarding-helper-modal";
 import { WorkspacePresencePrefetch } from "@multica/views/layout";
 import { useTabStore } from "@/stores/tab-store";
 
@@ -85,6 +86,10 @@ export function WorkspaceRouteLayout() {
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <WorkspacePresencePrefetch />
       <Outlet />
+      {/* Blocking modal that fires once for new users when they reach the
+       *  workspace before completing Multica Helper setup. Self-gates on
+       *  `me.onboarded_at == null` — renders null otherwise. */}
+      <OnboardingHelperModal />
     </WorkspaceSlugProvider>
   );
 }

@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/mail"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -40,19 +42,56 @@ const (
 	onboardingAgentTemplate = "multica_helper"
 )
 
-const onboardingAssistantDescription = "Default guide for your first Multica workspace."
+const onboardingAssistantDescription = "Built-in workspace assistant. Answers Multica questions and runs CLI operations."
 
-const onboardingAssistantAvatarURL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='30' fill='%23111217'/%3E%3Cpath d='M28 76c8-22 22-33 42-33 15 0 26 7 32 20' fill='none' stroke='%23ffffff' stroke-width='10' stroke-linecap='round'/%3E%3Cpath d='M38 88c13 13 39 17 58 1' fill='none' stroke='%238EE3C8' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='48' cy='56' r='7' fill='%23ffffff'/%3E%3Ccircle cx='78' cy='56' r='7' fill='%23ffffff'/%3E%3Cpath d='M64 20v14' stroke='%238EE3C8' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='64' cy='16' r='6' fill='%238EE3C8'/%3E%3C/svg%3E"
+const onboardingAssistantAvatarURL = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='t' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2323242C'/%3E%3Cstop offset='100%25' stop-color='%2313141A'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='28' fill='url(%23t)'/%3E%3Cg stroke='%23FFFFFF' stroke-width='13' stroke-linecap='round'%3E%3Cline x1='64' y1='32' x2='64' y2='96'/%3E%3Cline x1='32' y1='64' x2='96' y2='64'/%3E%3Cline x1='41.4' y1='41.4' x2='86.6' y2='86.6'/%3E%3Cline x1='86.6' y1='41.4' x2='41.4' y2='86.6'/%3E%3C/g%3E%3C/svg%3E"
 
-const onboardingAssistantInstructions = `You are Multica Helper, the user's first Multica teammate. Your job is to onboard them inside the first issue.
+// onboardingAssistantInstructions is the system prompt persisted on every
+// newly-created Multica Helper agent. It becomes the agent's `## Agent
+// Identity` block in CLAUDE.md / AGENTS.md / GEMINI.md (see
+// runtime_config.go:buildMetaSkillContent), so it's read on every task that
+// agent runs, not just the first onboarding issue.
+//
+// Four sections (matching the design reviewed by product):
+//   1. Identity — built-in workspace assistant, not onboarding-only
+//   2. What Multica is — concept map + docs / source pointers + GitHub
+//      issues as the official feedback channel
+//   3. What you can do — toolbox = `multica` CLI; `multica --help` is the
+//      manifest; never invent commands
+//   4. Tone — concise, like a colleague; match user's language; never
+//      fabricate URLs / flags / file paths
+//
+// Things intentionally NOT in here, because brief already injects them:
+//   - CLI command examples (## Available Commands)
+//   - "Use CLI, not curl" hard rule (## Important: Always Use the multica CLI)
+//   - @mention loop rules (## Mentions)
+//   - Per-task workflow (### Workflow, branched by task mode)
+//   - Output via comment add (## Output)
+//   - Attachment handling (## Attachments)
+const onboardingAssistantInstructions = `You are Multica Helper, the built-in AI assistant for this Multica workspace. Your role is to help any member use Multica better — answer questions, give advice, and execute workspace operations on their behalf.
 
-When the onboarding issue starts, leave a concise first comment that:
-1. Explains that issues are where work happens in Multica.
-2. Tells the user they can reply in the thread or @mention you to continue.
-3. Asks for one concrete task they want help with.
-4. Mentions that they can create more agents and connect more runtimes later.
+## What Multica is
 
-Keep the tone practical. Do not create extra issues or projects unless the user asks.`
+Multica is an open-source, AI-native team workspace (source: https://github.com/multica-ai/multica). The core idea: AI agents are treated as real teammates — they get assigned issues on a kanban-style board, comment in threads, change status, and run code, exactly like human members. You can also chat directly with agents (chat), group them into squads, and run scheduled or triggered automation (autopilot).
+
+For concept details (workspace / issue / project / agent / runtime / skill / squad / autopilot / inbox / chat session): fetch https://multica.ai/docs via WebFetch — that's authoritative. For the "why" or implementation, fetch the GitHub repo above. Never paraphrase concepts from memory.
+
+For ANY product-usage problem the user runs into (bug, unclear behavior, missing feature, improvement idea), suggest they file an issue at https://github.com/multica-ai/multica/issues — that's the official feedback channel.
+
+## What you can do
+
+Your toolbox is the ` + "`multica`" + ` CLI. It's already on your PATH and authenticated as the workspace owner.
+
+Your full capability surface = whatever ` + "`multica --help`" + ` shows. Run ` + "`multica --help`" + ` first, then ` + "`multica <command> --help`" + ` for any subcommand; use ` + "`--output json`" + ` for structured data. The CLI is your manifest — never invent commands or flags.
+
+A few things you can actually do (non-exhaustive — ` + "`--help`" + ` is the source of truth):
+- Create issues, post comments
+- Create or iterate on agents
+- Manage projects, squads, autopilots, skills, runtimes, etc.
+
+## Tone
+
+Be concise and direct, like a colleague. Respond in the user's language (Chinese in, Chinese out). When pointing at a UI location, name the exact path ("Settings → Agents → New"); when pointing at a doc, link to the specific page, not the homepage. Never fabricate URLs, flags, or file paths.`
 
 const onboardingIssueDescription = `Welcome to Multica.
 
@@ -212,9 +251,24 @@ func (h *Handler) CompleteOnboarding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userToResponse(user))
 }
 
+// maxStarterPromptLen caps the user-supplied StarterPrompt on
+// bootstrapOnboardingRuntimeRequest. The prompt becomes the seeded onboarding
+// issue's description and is read by the agent as task context, so we want
+// enough room for a real prompt (a paragraph or two) without inviting bulk
+// payload. 2 KiB is comfortably above the canonical three starter prompts
+// rendered by the workspace OnboardingHelperModal and still fits inside the
+// 8 KiB runtimeBootstrapBodyLimit alongside the workspace/runtime UUIDs.
+const maxStarterPromptLen = 2 * 1024
+
 type bootstrapOnboardingRuntimeRequest struct {
 	WorkspaceID string `json:"workspace_id"`
 	RuntimeID   string `json:"runtime_id"`
+	// StarterPrompt is the user's chosen first task for Multica Helper,
+	// rendered as the seeded onboarding issue's description. Optional —
+	// when empty (legacy clients or no choice made), the issue uses
+	// onboardingIssueDescription as a fallback. Server-capped at
+	// maxStarterPromptLen runes.
+	StarterPrompt string `json:"starter_prompt,omitempty"`
 }
 
 type bootstrapOnboardingRuntimeResponse struct {
@@ -253,6 +307,15 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 	}
 	if req.RuntimeID == "" {
 		writeError(w, http.StatusBadRequest, "runtime_id is required")
+		return
+	}
+	// Normalize StarterPrompt: trim outer whitespace so leading/trailing
+	// newlines from copy-pasted templates don't bloat the issue body, then
+	// cap by rune count (not bytes) so multi-byte CJK input gets the same
+	// budget as ASCII.
+	req.StarterPrompt = strings.TrimSpace(req.StarterPrompt)
+	if utf8.RuneCountInString(req.StarterPrompt) > maxStarterPromptLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("starter_prompt exceeds %d characters", maxStarterPromptLen))
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, req.WorkspaceID, "workspace_id")
@@ -370,10 +433,20 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusInternalServerError, "failed to allocate issue number")
 			return
 		}
+		// Description prefers the user's chosen starter prompt from the
+		// workspace OnboardingHelperModal. Empty StarterPrompt (legacy
+		// client / no card selected) falls back to the generic
+		// onboardingIssueDescription so the issue is never blank. Title
+		// stays fixed — LockAndFindActiveDuplicate above keys on it for
+		// idempotency, so varying the title would break dedupe.
+		description := onboardingIssueDescription
+		if req.StarterPrompt != "" {
+			description = req.StarterPrompt
+		}
 		issue, err = qtx.CreateIssue(r.Context(), db.CreateIssueParams{
 			WorkspaceID:   wsUUID,
 			Title:         onboardingIssueTitle,
-			Description:   strOrNullText(onboardingIssueDescription),
+			Description:   strOrNullText(description),
 			Status:        "todo",
 			Priority:      "high",
 			AssigneeType:  pgtype.Text{String: "agent", Valid: true},
