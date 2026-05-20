@@ -343,6 +343,42 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		fmt.Fprintf(&b, "7. If blocked, run `multica issue status %s blocked` and post a comment explaining why\n\n", ctx.IssueID)
 	}
 
+	// Parent / Sub-issue Protocol — emitted whenever the agent is running on a
+	// real Multica issue (assignment- or comment-triggered). The platform does
+	// not auto-notify a parent when a child changes status; this section
+	// teaches the child agent to post the signal as a best-effort follow-up,
+	// and teaches any agent creating sub-issues to use `backlog` vs `todo`
+	// deliberately. Skipped for chat, quick-create, and run-only autopilot
+	// runs, which have no parent/child semantics.
+	if ctx.IssueID != "" && ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == "" {
+		b.WriteString("## Parent / Sub-issue Protocol\n\n")
+		b.WriteString("Sub-issues are linked to a parent through `parent_issue_id`. The platform does **not** auto-notify a parent when its child changes status, so the child agent is responsible for posting that signal as a best-effort comment. Two behaviors apply.\n\n")
+
+		b.WriteString("### A. Notify the parent when this issue is finishing\n\n")
+		b.WriteString("Applies whenever you are wrapping up this issue and `parent_issue_id` (from the initial `multica issue get` JSON) is non-empty. Order matters — finish your own issue first, then write to the parent:\n\n")
+		b.WriteString("1. Post your final-results comment on **this** issue and run `multica issue status <this-issue-id> in_review`. Your own issue remains the source of truth for what you did; do not put the deliverable in the parent comment.\n")
+		b.WriteString("2. Run `multica issue get <parent-id> --output json` and read `assignee_id`, `assignee_type`, and `status`. If this call fails (parent removed, no access), skip the notification — do not block your own finish over it.\n")
+		b.WriteString("3. Post a single **top-level** comment on the parent issue (`multica issue comment add <parent-id> ...` with NO `--parent`). Follow the comment-formatting rules already in this brief for the current provider when choosing between `--content`, `--content-stdin`, and `--content-file`. The body should reference this child as `[MUL-<num>](mention://issue/<child-id>)`, state that it is now `in_review`, and give a one-line outcome plus whatever link the parent agent needs to decide the next step.\n\n")
+		b.WriteString("Mention rules for that parent-side comment — these prevent loops, do not weaken them:\n\n")
+		b.WriteString("| Parent assignee | Parent status | Mention in your comment? |\n")
+		b.WriteString("|---|---|---|\n")
+		b.WriteString("| Another agent (not you) | not `done` / `cancelled` | **Yes** — `[@Name](mention://agent/<parent-agent-id>)` to wake them |\n")
+		b.WriteString("| The same agent as yourself | any | **No** — never `@` yourself; you will read your own comment next time you run on the parent |\n")
+		b.WriteString("| Member or squad | any | **No** `@mention` — refer to them in plain text if needed |\n")
+		b.WriteString("| Any assignee | `done` or `cancelled` | **No** mention — do not re-trigger a closed issue |\n\n")
+		b.WriteString("This signal is best-effort, not a guaranteed handshake. Treat it as the parent's hint that a child is ready for review.\n\n")
+
+		b.WriteString("### B. Choose `backlog` vs `todo` when creating sub-issues\n\n")
+		b.WriteString("When you run `multica issue create --parent <this-issue-id> --assignee-id <agent-uuid> ...`, `--status` defaults to `todo`, which triggers an agent assignee immediately. Use this knob deliberately:\n\n")
+		b.WriteString("- `--status todo` → **start now**. Use only for the sub-issue you actually want running this turn.\n")
+		b.WriteString("- `--status backlog` → **wait**. Assignee is set but the agent will not be triggered. Promote it later with `multica issue status <child-id> todo` when its turn comes.\n\n")
+		b.WriteString("Decision shortcuts:\n\n")
+		b.WriteString("- N independent parallel sub-tasks → all `--status todo`.\n")
+		b.WriteString("- Strict serial Step 1 → 2 → 3 → only Step 1 gets `--status todo`; Step 2 and Step 3 are created with `--status backlog` from the start. When Step 1 notifies you via behavior A, promote Step 2 with `multica issue status <step2-id> todo`.\n")
+		b.WriteString("- Dependencies you have not figured out yet → create everything with `--status backlog` and promote them one by one.\n\n")
+		b.WriteString("Forgetting `--status backlog` and leaving the default `todo` is the common cause of supposedly-serial sub-tasks racing each other.\n\n")
+	}
+
 	if len(ctx.AgentSkills) > 0 {
 		b.WriteString("## Skills\n\n")
 		switch provider {
