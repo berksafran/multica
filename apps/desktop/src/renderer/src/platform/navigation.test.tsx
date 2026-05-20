@@ -298,3 +298,58 @@ describe("TabNavigationProvider.openInNewTab", () => {
     expect(state.switchWorkspace).not.toHaveBeenCalled();
   });
 });
+
+describe("TabNavigationProvider.push with pinned active tab", () => {
+  type ProviderRouter = Parameters<typeof TabNavigationProvider>[0]["router"];
+
+  function renderPinnedTabProvider(pathname: string) {
+    // The active tab and the per-tab router must share the same pathname:
+    // tryRouteToPinnedNewTab reads the *active tab's* router for the current
+    // pathname (so query-only pushes routed via React Router still compare
+    // correctly), while the TabNavigationProvider falls back to *its own*
+    // router.navigate when no interception fires. In real desktop usage they
+    // are the same router instance; this helper mirrors that invariant.
+    const fakeRouter = {
+      state: { location: { pathname, search: "" } },
+      subscribe: () => () => {},
+      navigate: vi.fn(),
+    } as unknown as ProviderRouter;
+    state.byWorkspace.acme.tabs[0] = {
+      id: "tA",
+      path: pathname,
+      pinned: true,
+      router: fakeRouter as unknown as MockRouter,
+    };
+
+    let adapter: ReturnType<typeof useNavigation> | null = null;
+    const Probe = captureAdapter((a) => {
+      adapter = a;
+    });
+    render(
+      <TabNavigationProvider router={fakeRouter}>
+        <Probe />
+      </TabNavigationProvider>,
+    );
+    return { getAdapter: () => adapter!, fakeRouter };
+  }
+
+  it("redirects push to a new foreground tab when pathname differs", () => {
+    const { getAdapter, fakeRouter } = renderPinnedTabProvider("/acme/issues");
+    getAdapter().push("/acme/projects");
+    expect(state.openTab).toHaveBeenCalledWith("/acme/projects", "/acme/projects", "File");
+    expect(state.setActiveTab).toHaveBeenCalledWith("tNew");
+    // Pinned interception short-circuits — the per-tab router must NOT
+    // navigate, otherwise the pinned tab itself would move off its path.
+    expect(fakeRouter.navigate).not.toHaveBeenCalled();
+  });
+
+  it("allows in-tab navigation when only search/hash changes", () => {
+    const { getAdapter, fakeRouter } = renderPinnedTabProvider("/acme/issues");
+    getAdapter().push("/acme/issues?filter=open");
+    // Same pathname → pinned interception declines, push falls through to
+    // the tab's own router.navigate, and no new tab is opened.
+    expect(state.openTab).not.toHaveBeenCalled();
+    expect(state.setActiveTab).not.toHaveBeenCalled();
+    expect(fakeRouter.navigate).toHaveBeenCalledWith("/acme/issues?filter=open");
+  });
+});
