@@ -13,6 +13,8 @@ import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
+import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
+import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 
 /**
  * Shared Stack.Screen options for every iOS formSheet-presented sheet route.
@@ -89,6 +91,12 @@ export default function WorkspaceLayout() {
       setCurrentWorkspace(matched.id, matched.slug);
     }
   }, [matched, setCurrentWorkspace]);
+
+  // Wipe cross-route Zustand draft stores whenever the active workspace
+  // changes — a draft picked under workspace A (assignee id, draft
+  // session id, etc.) is invalid in workspace B and must not leak.
+  useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
+  useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.

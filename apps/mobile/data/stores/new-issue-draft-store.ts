@@ -13,7 +13,14 @@
  * starts clean. Seed-from-comment params still go through local useState
  * inside the screen (description text is a controlled input that doesn't
  * cross routes); only the attribute-chip values live here.
+ *
+ * Workspace lifecycle: this draft is workspace-scoped (e.g. an `assignee`
+ * id only resolves in the workspace whose memberlist seeded it). When the
+ * user switches workspaces, the draft is invalid. Reset is wired in
+ * `app/(app)/[workspace]/_layout.tsx` via `useResetOnWorkspaceChange()` —
+ * that's the only place that calls it on workspace-id transitions.
  */
+import { useEffect } from "react";
 import { create } from "zustand";
 import type {
   IssuePriority,
@@ -56,3 +63,16 @@ export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
   setProject: (next) => set({ project: next }),
   reset: () => set({ ...INITIAL }),
 }));
+
+/**
+ * Clears the new-issue draft store whenever the active workspace id
+ * changes. Mounted once from the workspace `_layout.tsx`; relies on the
+ * workspace store being the source of truth. The first time it runs
+ * there's no prior id, so the initial mount effectively re-applies
+ * INITIAL — already the store's starting shape.
+ */
+export function useNewIssueDraftResetOnWorkspaceChange(wsId: string | null) {
+  useEffect(() => {
+    useNewIssueDraftStore.getState().reset();
+  }, [wsId]);
+}

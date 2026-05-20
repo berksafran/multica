@@ -15,7 +15,15 @@
  *
  * Both request slots are one-shot (consumed after read). This avoids
  * re-firing on every render or after a soft navigation back.
+ *
+ * Workspace lifecycle: this store holds workspace-scoped state
+ * (`activeSessionId` belongs to the workspace whose chat tab seeded it).
+ * When the user switches workspaces, the previous session id is invalid
+ * and any pending one-shot request belongs to the old tree. Reset is
+ * wired in `app/(app)/[workspace]/_layout.tsx` via
+ * `useResetOnWorkspaceChange()` — that's the only place that calls it.
  */
+import { useEffect } from "react";
 import { create } from "zustand";
 
 interface ChatSessionPickerState {
@@ -27,16 +35,21 @@ interface ChatSessionPickerState {
   requestNewWithAgent: () => void;
   consumeSelect: () => void;
   consumeOpenAgentPicker: () => void;
+  reset: () => void;
 }
+
+const INITIAL = {
+  activeSessionId: null,
+  selectRequest: null,
+  openAgentPickerRequest: null,
+} as const;
 
 export const useChatSessionPickerStore = create<ChatSessionPickerState>(
   (set, get) => ({
-    activeSessionId: null,
+    ...INITIAL,
     setActiveSessionId: (id) => set({ activeSessionId: id }),
-    selectRequest: null,
     requestSelect: (id) =>
       set({ selectRequest: { id, nonce: (get().selectRequest?.nonce ?? 0) + 1 } }),
-    openAgentPickerRequest: null,
     requestNewWithAgent: () =>
       set({
         openAgentPickerRequest: {
@@ -45,5 +58,22 @@ export const useChatSessionPickerStore = create<ChatSessionPickerState>(
       }),
     consumeSelect: () => set({ selectRequest: null }),
     consumeOpenAgentPicker: () => set({ openAgentPickerRequest: null }),
+    reset: () => set({ ...INITIAL }),
   }),
 );
+
+/**
+ * Clears the chat session picker store whenever the active workspace id
+ * changes. Mounted once from the workspace `_layout.tsx`; relies on the
+ * workspace store being the source of truth for "which workspace am I
+ * looking at right now". The first time it runs there's no prior id, so
+ * the initial mount is effectively a no-op (we already initialise to the
+ * INITIAL shape).
+ */
+export function useChatSessionPickerResetOnWorkspaceChange(
+  wsId: string | null,
+) {
+  useEffect(() => {
+    useChatSessionPickerStore.getState().reset();
+  }, [wsId]);
+}
