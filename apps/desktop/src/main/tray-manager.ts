@@ -154,20 +154,12 @@ export function setupTray(opts: TrayOptions): void {
   // Left-click handler is a macOS/Windows nice-to-have only. Linux's
   // AppIndicator surface doesn't fire `click`, so all actions must remain
   // reachable via the context menu — which they are (see buildMenuTemplate).
+  // Click always shows + focuses the main window; hiding is reserved for
+  // the closeToTray pref (PR2). showOrCreateWindow restores from minimized,
+  // shows if hidden, and focuses an already-visible window.
   if (process.platform !== "linux") {
     tray.on("click", () => {
-      const win = opts.getWindow();
-      // The window may have been closed (mainWindow === null after the
-      // owner's `closed` handler) or destroyed; in either case recreate.
-      if (!win || win.isDestroyed()) {
-        opts.showOrCreateWindow();
-        return;
-      }
-      if (win.isVisible() && !win.isMinimized()) {
-        win.hide();
-      } else {
-        opts.showOrCreateWindow();
-      }
+      opts.showOrCreateWindow();
     });
   }
 

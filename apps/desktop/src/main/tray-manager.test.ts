@@ -252,6 +252,32 @@ describe("setupTray", () => {
     }
   });
 
+  it("tray click on darwin always shows + focuses a visible window, never hides it", () => {
+    const orig = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    try {
+      const showOrCreateWindow = vi.fn();
+      const visibleWindow = {
+        isDestroyed: () => false,
+        isVisible: () => true,
+        isMinimized: () => false,
+        hide: vi.fn(),
+        show: vi.fn(),
+        focus: vi.fn(),
+        restore: vi.fn(),
+      } as unknown as Electron.BrowserWindow;
+      setupTray({ getWindow: () => visibleWindow, showOrCreateWindow });
+      const click = h.trayInstances[0]!.clickListeners[0]!;
+      click();
+      click();
+      click();
+      expect(showOrCreateWindow).toHaveBeenCalledTimes(3);
+      expect(visibleWindow.hide).not.toHaveBeenCalled();
+    } finally {
+      if (orig) Object.defineProperty(process, "platform", orig);
+    }
+  });
+
   it("replays current status on subscribe and renders an initial menu", () => {
     h.lastEmit.value = { state: "running", pid: 99, agents: ["a"] };
     setupTray({ getWindow: () => null, showOrCreateWindow: vi.fn() });
