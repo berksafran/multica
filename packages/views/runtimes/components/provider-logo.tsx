@@ -126,6 +126,35 @@ function KimiLogo({ className }: { className: string }) {
   );
 }
 
+// Gemini (Google) — official 4-point "spark" mark with Google's signature
+// blue → purple → pink gradient. Path matches the public Gemini brand SVG.
+function GeminiLogo({ className }: { className: string }) {
+  const gradientId = `gemini-logo-gradient-${useId().replace(/:/g, "")}`;
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <defs>
+        <linearGradient
+          id={gradientId}
+          x1="2"
+          y1="4"
+          x2="22"
+          y2="20"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#1C7EFF" />
+          <stop offset="0.52" stopColor="#9168C0" />
+          <stop offset="1" stopColor="#D96570" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M12 24A14.304 14.304 0 0 0 0 12 14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12 14.305 14.305 0 0 0-12 12Z"
+        fill={`url(#${gradientId})`}
+      />
+    </svg>
+  );
+}
+
 // Kiro CLI — official icon sourced from kiro.dev/icon.svg.
 function KiroLogo({ className }: { className: string }) {
   const maskId = `kiro-logo-mask-${useId().replace(/:/g, "")}`;
@@ -193,6 +222,8 @@ export function ProviderLogo({
       return <KimiLogo className={className} />;
     case "kiro":
       return <KiroLogo className={className} />;
+    case "gemini":
+      return <GeminiLogo className={className} />;
     default:
       return <Monitor className={className} />;
   }
