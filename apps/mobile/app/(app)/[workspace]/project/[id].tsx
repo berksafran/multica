@@ -13,7 +13,7 @@
  * confirmation via `Alert.alert` per iOS HIG (destructive actions need
  * a second tap).
  */
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -29,27 +29,18 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import type {
-  ProjectPriority,
-  ProjectStatus,
-} from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { ProjectHeaderCard } from "@/components/project/project-header-card";
 import { ProjectPropertiesSection } from "@/components/project/project-properties-section";
 import { ProjectRelatedIssues } from "@/components/project/project-related-issues";
 import { ProjectResourcesSection } from "@/components/project/project-resources-section";
-import { ProjectStatusPickerSheet } from "@/components/project/pickers/project-status-picker-sheet";
-import { ProjectPriorityPickerSheet } from "@/components/project/pickers/project-priority-picker-sheet";
 import {
   projectDetailOptions,
   projectResourcesOptions,
 } from "@/data/queries/projects";
 import { issueKeys } from "@/data/queries/issue-keys";
-import {
-  useDeleteProject,
-  useUpdateProject,
-} from "@/data/mutations/projects";
+import { useDeleteProject } from "@/data/mutations/projects";
 import { useProjectRealtime } from "@/data/realtime/use-project-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
@@ -60,15 +51,7 @@ export default function ProjectDetail() {
   const qc = useQueryClient();
 
   const detail = useQuery(projectDetailOptions(wsId, id));
-  const updateProject = useUpdateProject(id);
   const deleteProject = useDeleteProject(id);
-
-  // Status + Priority pickers still use the older transparent-Modal
-  // pattern (project-status-picker-sheet / project-priority-picker-sheet) —
-  // not part of the SheetShell formSheet migration. Lead + Add Resource
-  // moved to formSheet routes.
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [priorityOpen, setPriorityOpen] = useState(false);
 
   // Per-record realtime — when another client deletes the project we're
   // viewing, pop back so the user isn't stranded on a 404.
@@ -195,8 +178,20 @@ export default function ProjectDetail() {
           />
           <ProjectPropertiesSection
             project={project}
-            onPressStatus={() => setStatusOpen(true)}
-            onPressPriority={() => setPriorityOpen(true)}
+            onPressStatus={() => {
+              if (wsSlug)
+                router.push({
+                  pathname: "/[workspace]/project/[id]/picker/status",
+                  params: { workspace: wsSlug, id },
+                });
+            }}
+            onPressPriority={() => {
+              if (wsSlug)
+                router.push({
+                  pathname: "/[workspace]/project/[id]/picker/priority",
+                  params: { workspace: wsSlug, id },
+                });
+            }}
             onPressLead={() => {
               if (wsSlug)
                 router.push({
@@ -219,27 +214,6 @@ export default function ProjectDetail() {
           <ProjectRelatedIssues projectId={id} />
         </ScrollView>
       )}
-
-      {project ? (
-        <>
-          <ProjectStatusPickerSheet
-            visible={statusOpen}
-            value={project.status}
-            onChange={(next: ProjectStatus) =>
-              updateProject.mutate({ status: next })
-            }
-            onClose={() => setStatusOpen(false)}
-          />
-          <ProjectPriorityPickerSheet
-            visible={priorityOpen}
-            value={project.priority}
-            onChange={(next: ProjectPriority) =>
-              updateProject.mutate({ priority: next })
-            }
-            onClose={() => setPriorityOpen(false)}
-          />
-        </>
-      ) : null}
     </SafeAreaView>
   );
 }

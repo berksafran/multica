@@ -105,18 +105,19 @@ This tier is where the biggest payoff lives (Lesson 6 in CLAUDE.md catalogues th
 | `components/issue/comment-action-sheet.tsx` | `ActionSheetIOS.showActionSheetWithOptions` | One-of-N action menu — exactly what ActionSheetIOS is for. Recommended Phase 3 starter (visible deletion, no styling questions). |
 | `components/issue/pickers/due-date-picker-sheet.tsx` | `@react-native-community/datetimepicker` inline picker | Date selection — native API already installed |
 
-**B.2 — replaced by RNR `Select` (small file, mostly callsite changes)**
+**B.2 — replaced by formSheet routes (done)**
 
-| Current sheet | Replacement |
-|---|---|
-| `components/issue/pickers/status-picker-sheet.tsx` | RNR `Select` |
-| `components/issue/pickers/priority-picker-sheet.tsx` | `ActionSheetIOS` (options fixed and few) or RNR `Select` |
-| `components/issue/pickers/assignee-picker-sheet.tsx` | RNR `Select` (searchable) |
-| `components/issue/pickers/label-picker-sheet.tsx` | RNR `Select` (multi) |
-| `components/issue/pickers/project-picker-sheet.tsx` | RNR `Select` (searchable) |
-| `components/project/pickers/project-status-picker-sheet.tsx` | RNR `Select` |
-| `components/project/pickers/project-priority-picker-sheet.tsx` | `ActionSheetIOS` or RNR `Select` |
-| `components/project/pickers/project-lead-picker-sheet.tsx` | RNR `Select` (searchable) |
+The original plan was to swap each picker-sheet for an RNR `Select`. The
+mobile-sheet-rollout PR series instead converged on a different shape:
+every former picker-sheet now ships as a pure `<XxxPickerBody>` component
+under `components/<domain>/pickers/`, embedded inside an Expo Router
+formSheet route at `app/(app)/[workspace]/<context>/picker/<field>.tsx`.
+This gives the iOS UISheetPresentationController-native chrome
+(grabber + detents + spring drag-dismiss) without the per-callsite
+state and visibility prop dance an RNR `Select` would still require.
+
+Files in this row are all deleted; their bodies + routes live under the
+paths above. No follow-up needed.
 
 **B.3 — genuinely needs a custom-content sheet (RNR `Dialog` pageSheet)**
 

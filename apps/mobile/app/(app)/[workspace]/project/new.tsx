@@ -16,6 +16,7 @@ import {
   Alert,
   InteractionManager,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -32,8 +33,8 @@ import {
 } from "@/components/ui/input-tokens";
 import { ProjectStatusIcon } from "@/components/ui/project-status-icon";
 import { ProjectPriorityIcon } from "@/components/ui/project-priority-icon";
-import { ProjectStatusPickerSheet } from "@/components/project/pickers/project-status-picker-sheet";
-import { ProjectPriorityPickerSheet } from "@/components/project/pickers/project-priority-picker-sheet";
+import { ProjectStatusPickerBody } from "@/components/project/pickers/project-status-picker-body";
+import { ProjectPriorityPickerBody } from "@/components/project/pickers/project-priority-picker-body";
 import {
   projectPriorityLabel,
   projectStatusLabel,
@@ -212,19 +213,66 @@ export default function NewProject() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <ProjectStatusPickerSheet
-        visible={statusOpen}
-        value={status}
-        onChange={setStatus}
-        onClose={() => setStatusOpen(false)}
-      />
-      <ProjectPriorityPickerSheet
+      <DraftPickerModal visible={statusOpen} onClose={() => setStatusOpen(false)}>
+        <ProjectStatusPickerBody
+          value={status}
+          onChange={(next) => {
+            setStatus(next);
+            setStatusOpen(false);
+          }}
+        />
+      </DraftPickerModal>
+      <DraftPickerModal
         visible={priorityOpen}
-        value={priority}
-        onChange={setPriority}
         onClose={() => setPriorityOpen(false)}
-      />
+      >
+        <ProjectPriorityPickerBody
+          value={priority}
+          onChange={(next) => {
+            setPriority(next);
+            setPriorityOpen(false);
+          }}
+        />
+      </DraftPickerModal>
     </>
+  );
+}
+
+/**
+ * Inline modal shell for the new-project draft pickers. The host screen is
+ * already a presentation="modal", and routes can't read draft local state
+ * (the project doesn't exist yet, nothing in the cache to push the picker
+ * to). So we keep a lightweight centered card here rather than wire a
+ * separate draft store for a single transient form — matches the carve-out
+ * in apps/mobile/CLAUDE.md "modal container selection" for short fixed
+ * picker lists with no neighbour pickers to be consistent with.
+ */
+function DraftPickerModal({
+  visible,
+  onClose,
+  children,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable className="flex-1 bg-black/40" onPress={onClose}>
+        <View className="flex-1 items-center justify-center px-8">
+          <Pressable onPress={() => {}} className="w-full max-w-sm">
+            <View className="bg-popover rounded-2xl overflow-hidden">
+              {children}
+            </View>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
   );
 }
 

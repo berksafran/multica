@@ -192,6 +192,14 @@ export default function WorkspaceLayout() {
         />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
+          name="project/[id]/picker/status"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="project/[id]/picker/priority"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
           name="project/[id]/picker/lead"
           options={SHEET_OPTIONS}
         />
