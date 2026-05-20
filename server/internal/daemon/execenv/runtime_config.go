@@ -356,9 +356,19 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 		b.WriteString("### A. Notify the parent when this issue is finishing\n\n")
 		b.WriteString("Applies whenever you are wrapping up this issue and `parent_issue_id` (from the initial `multica issue get` JSON) is non-empty. Order matters — finish your own issue first, then write to the parent:\n\n")
-		b.WriteString("1. Post your final-results comment on **this** issue and run `multica issue status <this-issue-id> in_review`. Your own issue remains the source of truth for what you did; do not put the deliverable in the parent comment.\n")
+		if ctx.TriggerCommentID != "" {
+			// Comment-triggered runs must NOT override the comment-triggered
+			// workflow rule "Do NOT change the issue status unless the
+			// comment explicitly asks for it". Step A here is reply-shaped,
+			// not status-shaped — the protocol's parent notification is
+			// gated on the run actually closing out child work.
+			b.WriteString("1. Complete your reply on **this** issue per the comment-triggered workflow above. The rule \"Do NOT change the issue status unless the comment explicitly asks for it\" still applies — do **not** add an unconditional status flip to `in_review` (or anything else) just because you are wrapping up child work. Only change this issue's status when the triggering comment explicitly asked for a status change.\n")
+			b.WriteString("   The parent-notification steps below apply only when this run is in fact closing out the child's work (typically because the triggering comment told you to finish and hand the deliverable back to the parent). If you are just answering a question, doing partial work, or otherwise not wrapping up, stop after replying — skip the parent notification entirely.\n")
+		} else {
+			b.WriteString("1. Post your final-results comment on **this** issue and run `multica issue status <this-issue-id> in_review`. Your own issue remains the source of truth for what you did; do not put the deliverable in the parent comment.\n")
+		}
 		b.WriteString("2. Run `multica issue get <parent-id> --output json` and read `assignee_id`, `assignee_type`, and `status`. If this call fails (parent removed, no access), skip the notification — do not block your own finish over it.\n")
-		b.WriteString("3. Post a single **top-level** comment on the parent issue (`multica issue comment add <parent-id> ...` with NO `--parent`). Follow the comment-formatting rules already in this brief for the current provider when choosing between `--content`, `--content-stdin`, and `--content-file`. The body should reference this child as `[MUL-<num>](mention://issue/<child-id>)`, state that it is now `in_review`, and give a one-line outcome plus whatever link the parent agent needs to decide the next step.\n\n")
+		b.WriteString("3. Post a single **top-level** comment on the parent issue (`multica issue comment add <parent-id> ...` with NO `--parent`). Follow the comment-formatting rules already in this brief for the current provider when choosing between `--content`, `--content-stdin`, and `--content-file`. The body should reference this child as `[MUL-<num>](mention://issue/<child-id>)`, state the child's current status, and give a one-line outcome plus whatever link the parent agent needs to decide the next step.\n\n")
 		b.WriteString("Mention rules for that parent-side comment — these prevent loops, do not weaken them:\n\n")
 		b.WriteString("| Parent assignee | Parent status | Mention in your comment? |\n")
 		b.WriteString("|---|---|---|\n")

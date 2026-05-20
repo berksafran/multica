@@ -82,6 +82,70 @@ func TestParentSubIssueProtocolEmittedForCommentTrigger(t *testing.T) {
 	}
 }
 
+// Comment-triggered briefs must NOT include the unconditional
+// `multica issue status <this-issue-id> in_review` instruction from Step A.
+// That instruction conflicts with the comment-triggered workflow rule
+// "Do NOT change the issue status unless the comment explicitly asks for it"
+// (Elon's blocking review on PR #2918). Step A for comment-triggered runs
+// must instead remind the agent that the existing status guardrail still
+// applies and that the parent notification is gated on actually closing
+// out child work.
+func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID:          "55555555-6666-7777-8888-999999999999",
+		TriggerCommentID: "66666666-7777-8888-9999-aaaaaaaaaaaa",
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	// The exact unconditional status-flip command from the previous Step A
+	// must not appear anywhere in a comment-triggered brief. It is fine
+	// for Step B to teach the agent to *promote* a child to `todo` — that
+	// targets a different issue id, so the substring does not collide.
+	if strings.Contains(out, "`multica issue status <this-issue-id> in_review`") {
+		t.Errorf("comment-triggered brief must not contain the unconditional `multica issue status <this-issue-id> in_review` command from Step A (conflicts with the comment-triggered \"do not change status unless asked\" rule)")
+	}
+
+	// The existing comment-triggered workflow rule must still be present
+	// AND Step A must echo it, so the agent cannot rely on the rule
+	// having been forgotten by the time it reaches the protocol section.
+	// Counting occurrences guards against future edits that drop the
+	// in-protocol reminder while leaving the workflow rule intact.
+	const guardrail = "Do NOT change the issue status unless the comment explicitly asks for it"
+	if got := strings.Count(out, guardrail); got < 2 {
+		t.Errorf("expected the comment-triggered status guardrail %q to appear at least twice (once in the comment-triggered workflow, once echoed inside protocol Step A), got %d", guardrail, got)
+	}
+
+	// And Step A must explicitly gate the parent-notification on
+	// actually closing out child work so the agent does not blindly post
+	// to the parent on every comment-triggered run.
+	for _, want := range []string{
+		"closing out the child",
+		"skip the parent notification",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("comment-triggered Step A missing required phrasing %q", want)
+		}
+	}
+}
+
+// Assignment-triggered briefs are the inverse boundary: when the agent
+// owns the issue lifecycle, Step A must still keep the unconditional
+// `multica issue status <this-issue-id> in_review` flip. Splitting Step A
+// by trigger type must not silently drop this behavior on the assignment
+// branch.
+func TestAssignmentTriggeredProtocolStillFlipsInReview(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID: "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	if !strings.Contains(out, "`multica issue status <this-issue-id> in_review`") {
+		t.Errorf("assignment-triggered Step A must keep the unconditional `multica issue status <this-issue-id> in_review` flip")
+	}
+}
+
 func TestParentSubIssueProtocolSkippedForNonIssueModes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
