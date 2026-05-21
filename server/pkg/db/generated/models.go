@@ -471,19 +471,21 @@ type SkillFile struct {
 }
 
 type SlackAgentApp struct {
-	ID              pgtype.UUID        `json:"id"`
-	AgentID         pgtype.UUID        `json:"agent_id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	SlackAppID      string             `json:"slack_app_id"`
-	SlackTeamID     pgtype.Text        `json:"slack_team_id"`
-	BotUserID       pgtype.Text        `json:"bot_user_id"`
-	BotTokenEnc     pgtype.Text        `json:"bot_token_enc"`
-	SigningSecret   string             `json:"signing_secret"`
-	ManifestVersion int32              `json:"manifest_version"`
-	Status          string             `json:"status"`
-	ConnectedByID   pgtype.UUID        `json:"connected_by_id"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID                   pgtype.UUID        `json:"id"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	SlackAppID           string             `json:"slack_app_id"`
+	SlackTeamID          pgtype.Text        `json:"slack_team_id"`
+	BotUserID            pgtype.Text        `json:"bot_user_id"`
+	BotTokenEnc          pgtype.Text        `json:"bot_token_enc"`
+	SigningSecret        string             `json:"signing_secret"`
+	ManifestVersion      int32              `json:"manifest_version"`
+	Status               string             `json:"status"`
+	ConnectedByID        pgtype.UUID        `json:"connected_by_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	OauthClientIDEnc     pgtype.Text        `json:"oauth_client_id_enc"`
+	OauthClientSecretEnc pgtype.Text        `json:"oauth_client_secret_enc"`
 }
 
 type SlackChatSessionLink struct {

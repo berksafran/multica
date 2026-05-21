@@ -101,6 +101,52 @@ func (m *ManifestClient) Update(ctx context.Context, appID string, manifest Mani
 	return &out, nil
 }
 
+// ManifestExportResponse is the trimmed apps.manifest.export response.
+// We only consume OK/Error in the handler — confirming the app still
+// exists is enough to flag local rows as orphaned when this call fails.
+type ManifestExportResponse struct {
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+	Manifest any    `json:"manifest,omitempty"`
+}
+
+// Export fetches the current manifest for the given app id. The primary
+// caller doesn't read the manifest body — it uses success / failure
+// (specifically "invalid_app_id" / "app_not_found") as a liveness probe
+// for the app on Slack's side. Errors with IsAppMissing(err) == true
+// indicate the app has been deleted in the Slack dashboard and the
+// local row should be cleaned up.
+func (m *ManifestClient) Export(ctx context.Context, appID string) (*ManifestExportResponse, error) {
+	v := url.Values{}
+	v.Set("app_id", appID)
+	var out ManifestExportResponse
+	if err := m.doForm(ctx, "apps.manifest.export", v, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return &out, fmt.Errorf("slack: %s", out.Error)
+	}
+	return &out, nil
+}
+
+// IsAppMissing returns true when the error from a Slack API call
+// indicates the target app has been removed on Slack's side. The
+// Slack error code is unstable across endpoints — different ones
+// return "invalid_app_id" vs "app_not_found" vs "app_deleted" — so
+// the caller passes the full error string and we match substrings.
+func IsAppMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{"invalid_app_id", "app_not_found", "app_deleted", "not_found", "missing_app"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
 type ManifestDeleteResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`

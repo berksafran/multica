@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, KeyRound, Loader2, MessageSquare } from "lucide-react";
+import { AlertTriangle, ExternalLink, KeyRound, Loader2, MessageSquare, RefreshCw } from "lucide-react";
 import type { Agent } from "@multica/core/types";
 import { api } from "@multica/core/api";
 import { Button } from "@multica/ui/components/ui/button";
@@ -10,6 +10,7 @@ import { useT } from "../../../i18n";
 
 const slackStatusQueryKey = (wsId: string, agentId: string) => ["agent-slack", wsId, agentId] as const;
 const slackCredentialsQueryKey = (wsId: string, agentId: string) => ["agent-slack-credentials", wsId, agentId] as const;
+const slackVerifyQueryKey = (wsId: string, agentId: string) => ["agent-slack-verify", wsId, agentId] as const;
 
 /**
  * SlackTab is the per-agent "Connect to Slack" surface inside
@@ -36,6 +37,20 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
     refetchOnWindowFocus: true,
   });
 
+  // Probe Slack to detect orphaned rows (app deleted in dashboard).
+  // Only runs once the local row exists; staleTime keeps the network
+  // cost down (one Slack round-trip per minute even with focus events).
+  const verifyQuery = useQuery({
+    queryKey: slackVerifyQueryKey(workspaceId, agent.id),
+    queryFn: () => api.verifyAgentSlackApp(workspaceId, agent.id),
+    enabled: !!statusQuery.data?.provisioned,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+    // 502 means probe-failed-but-row-still-trusted — don't retry to
+    // avoid spamming Slack while the network is flaky.
+    retry: false,
+  });
+
   const provisionMutation = useMutation({
     mutationFn: () => api.provisionAgentSlackApp(workspaceId, agent.id),
     onSuccess: (resp) => {
@@ -60,9 +75,19 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: slackStatusQueryKey(workspaceId, agent.id) });
       qc.invalidateQueries({ queryKey: slackCredentialsQueryKey(workspaceId, agent.id) });
+      qc.invalidateQueries({ queryKey: slackVerifyQueryKey(workspaceId, agent.id) });
       setError(null);
     },
     onError: (e) => setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_disconnect)),
+  });
+
+  const verifyMutation = useMutation({
+    mutationFn: () => api.verifyAgentSlackApp(workspaceId, agent.id),
+    onSuccess: (data) => {
+      qc.setQueryData(slackVerifyQueryKey(workspaceId, agent.id), data);
+      setError(null);
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_sync)),
   });
 
   if (statusQuery.isLoading) {
@@ -85,6 +110,11 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
   const provisioning = provisionMutation.isPending;
   const syncing = syncMutation.isPending;
   const disconnecting = disconnectMutation.isPending;
+  const verifying = verifyMutation.isPending || verifyQuery.isFetching;
+  // Treat the row as orphaned only when verify completed AND came back
+  // with app_exists=false. While verify is loading / errored we trust
+  // the local row to avoid flashing a misleading banner.
+  const isOrphaned = status.provisioned && verifyQuery.data?.app_exists === false;
 
   return (
     <div className="flex flex-col gap-6 px-4 py-6">
@@ -103,6 +133,35 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
       {!status.configured && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {t(($) => $.slack_tab.not_configured)}
+        </div>
+      )}
+
+      {isOrphaned && (
+        <div className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3 text-xs">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div className="flex flex-1 flex-col gap-2">
+            <div className="flex flex-col gap-0.5">
+              <p className="font-semibold text-destructive">
+                {t(($) => $.slack_tab.orphaned_title)}
+              </p>
+              <p className="text-muted-foreground">
+                {t(($) => $.slack_tab.orphaned_description)}
+              </p>
+            </div>
+            <div>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() => disconnectMutation.mutate()}
+                disabled={disconnecting}
+              >
+                {disconnecting
+                  ? t(($) => $.slack_tab.disconnecting)
+                  : t(($) => $.slack_tab.orphaned_remove)}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -232,6 +291,26 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
             qc.invalidateQueries({ queryKey: slackStatusQueryKey(workspaceId, agent.id) });
           }}
         />
+      )}
+
+      {/* Verify footer — always available when the row exists so users
+          can manually re-check after a Slack-side change without
+          waiting for the focus-driven refresh. */}
+      {status.provisioned && (
+        <div className="flex items-center justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => verifyMutation.mutate()}
+            disabled={verifying}
+          >
+            <RefreshCw className={`mr-2 h-3.5 w-3.5 ${verifying ? "animate-spin" : ""}`} />
+            {verifying
+              ? t(($) => $.slack_tab.verifying)
+              : t(($) => $.slack_tab.verify_button)}
+          </Button>
+        </div>
       )}
 
       {error && (

@@ -96,15 +96,24 @@ func verifySlackState(token string) (workspaceID, agentID, appRowID string, ok b
 // ── Response shapes ─────────────────────────────────────────────────────
 
 type SlackStatusResponse struct {
-	Configured       bool    `json:"configured"`
-	Provisioned      bool    `json:"provisioned"`
-	Installed        bool    `json:"installed"`
-	HasCredentials   bool    `json:"has_credentials"`
-	AppID            *string `json:"app_id,omitempty"`
-	TeamID           *string `json:"team_id,omitempty"`
-	BotUserID        *string `json:"bot_user_id,omitempty"`
-	Status           *string `json:"status,omitempty"`
-	InstallURL       *string `json:"install_url,omitempty"`
+	Configured     bool    `json:"configured"`
+	Provisioned    bool    `json:"provisioned"`
+	Installed      bool    `json:"installed"`
+	HasCredentials bool    `json:"has_credentials"`
+	AppID          *string `json:"app_id,omitempty"`
+	TeamID         *string `json:"team_id,omitempty"`
+	BotUserID      *string `json:"bot_user_id,omitempty"`
+	Status         *string `json:"status,omitempty"`
+	InstallURL     *string `json:"install_url,omitempty"`
+}
+
+// SlackVerifyResponse is the dedicated probe result returned by
+// /slack/verify. We return AppExists rather than baking it into the
+// status response so callers can decide when to pay the network cost
+// (one round-trip to Slack per verify call).
+type SlackVerifyResponse struct {
+	AppExists bool   `json:"app_exists"`
+	Error     string `json:"error,omitempty"`
 }
 
 // SlackCredentialsResponse exposes the per-app OAuth client credentials.
@@ -566,6 +575,60 @@ func (h *Handler) SyncAgentSlackApp(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("slack: bump manifest version failed", "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── POST /api/workspaces/{id}/agents/{agentId}/slack/verify ────────────
+
+// VerifyAgentSlackApp probes Slack to confirm the provisioned app
+// still exists on their side. The user case it solves: they deleted
+// the app manually from api.slack.com/apps and now the Multica row
+// is orphaned. UI calls this on tab open + on focus to detect drift
+// and offers a one-click "Remove from Multica" when app_exists=false.
+func (h *Handler) VerifyAgentSlackApp(w http.ResponseWriter, r *http.Request) {
+	if !slackConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "slack integration not configured")
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "agentId"), "agent_id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: agentUUID, WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	app, err := h.Queries.GetSlackAgentAppByAgentID(r.Context(), agentUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No row, no app to verify — treat as "doesn't exist" so
+			// the UI doesn't render an orphan banner.
+			writeJSON(w, http.StatusOK, SlackVerifyResponse{AppExists: false})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	mc := slack.NewManifestClient(strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")))
+	_, err = mc.Export(r.Context(), app.SlackAppID)
+	if err == nil {
+		writeJSON(w, http.StatusOK, SlackVerifyResponse{AppExists: true})
+		return
+	}
+	if slack.IsAppMissing(err) {
+		writeJSON(w, http.StatusOK, SlackVerifyResponse{AppExists: false, Error: err.Error()})
+		return
+	}
+	// Network blip, expired config token, etc — return 502 so the UI
+	// keeps the previous state instead of falsely flagging an orphan.
+	slog.Warn("slack: verify failed", "err", err, "app_id", app.SlackAppID)
+	writeError(w, http.StatusBadGateway, "verify failed: "+err.Error())
 }
 
 // ── DELETE /api/workspaces/{id}/agents/{agentId}/slack ──────────────────

@@ -19,7 +19,7 @@ INSERT INTO slack_agent_app (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at
+RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc
 `
 
 type CreateSlackAgentAppParams struct {
@@ -60,6 +60,8 @@ func (q *Queries) CreateSlackAgentApp(ctx context.Context, arg CreateSlackAgentA
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OauthClientIDEnc,
+		&i.OauthClientSecretEnc,
 	)
 	return i, err
 }
@@ -120,7 +122,7 @@ func (q *Queries) DeleteSlackAgentApp(ctx context.Context, arg DeleteSlackAgentA
 }
 
 const getSlackAgentAppByAgentID = `-- name: GetSlackAgentAppByAgentID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
 WHERE agent_id = $1
 `
 
@@ -141,12 +143,14 @@ func (q *Queries) GetSlackAgentAppByAgentID(ctx context.Context, agentID pgtype.
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OauthClientIDEnc,
+		&i.OauthClientSecretEnc,
 	)
 	return i, err
 }
 
 const getSlackAgentAppByAppID = `-- name: GetSlackAgentAppByAppID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
 WHERE slack_app_id = $1
 `
 
@@ -167,12 +171,14 @@ func (q *Queries) GetSlackAgentAppByAppID(ctx context.Context, slackAppID string
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OauthClientIDEnc,
+		&i.OauthClientSecretEnc,
 	)
 	return i, err
 }
 
 const getSlackAgentAppByID = `-- name: GetSlackAgentAppByID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
 WHERE id = $1
 `
 
@@ -193,6 +199,8 @@ func (q *Queries) GetSlackAgentAppByID(ctx context.Context, id pgtype.UUID) (Sla
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OauthClientIDEnc,
+		&i.OauthClientSecretEnc,
 	)
 	return i, err
 }
@@ -242,7 +250,7 @@ func (q *Queries) GetSlackChatSessionLinkByThread(ctx context.Context, arg GetSl
 }
 
 const listSlackAgentAppsByWorkspace = `-- name: ListSlackAgentAppsByWorkspace :many
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -270,6 +278,8 @@ func (q *Queries) ListSlackAgentAppsByWorkspace(ctx context.Context, workspaceID
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OauthClientIDEnc,
+			&i.OauthClientSecretEnc,
 		); err != nil {
 			return nil, err
 		}
@@ -302,7 +312,7 @@ SET slack_team_id = $2,
     status        = 'installed',
     updated_at    = now()
 WHERE id = $1
-RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at
+RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc
 `
 
 type UpdateSlackAgentAppInstallParams struct {
@@ -336,6 +346,8 @@ func (q *Queries) UpdateSlackAgentAppInstall(ctx context.Context, arg UpdateSlac
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OauthClientIDEnc,
+		&i.OauthClientSecretEnc,
 	)
 	return i, err
 }
@@ -354,5 +366,28 @@ type UpdateSlackAgentAppManifestVersionParams struct {
 
 func (q *Queries) UpdateSlackAgentAppManifestVersion(ctx context.Context, arg UpdateSlackAgentAppManifestVersionParams) error {
 	_, err := q.db.Exec(ctx, updateSlackAgentAppManifestVersion, arg.ID, arg.ManifestVersion)
+	return err
+}
+
+const updateSlackAgentAppOAuthCredentials = `-- name: UpdateSlackAgentAppOAuthCredentials :exec
+UPDATE slack_agent_app
+SET oauth_client_id_enc     = COALESCE($2,     oauth_client_id_enc),
+    oauth_client_secret_enc = COALESCE($3, oauth_client_secret_enc),
+    updated_at              = now()
+WHERE id = $1
+`
+
+type UpdateSlackAgentAppOAuthCredentialsParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	OauthClientIDEnc     pgtype.Text `json:"oauth_client_id_enc"`
+	OauthClientSecretEnc pgtype.Text `json:"oauth_client_secret_enc"`
+}
+
+// Stores the per-app OAuth client_id + client_secret returned by
+// apps.manifest.create. Either field may be omitted on update (caller
+// passes the existing ciphertext to keep it). Both ciphertexts are
+// produced by the app-level AES-GCM helper.
+func (q *Queries) UpdateSlackAgentAppOAuthCredentials(ctx context.Context, arg UpdateSlackAgentAppOAuthCredentialsParams) error {
+	_, err := q.db.Exec(ctx, updateSlackAgentAppOAuthCredentials, arg.ID, arg.OauthClientIDEnc, arg.OauthClientSecretEnc)
 	return err
 }

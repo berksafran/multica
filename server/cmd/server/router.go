@@ -379,6 +379,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Post("/agents/{agentId}/slack/provision", h.ProvisionAgentSlackApp)
 					r.Post("/agents/{agentId}/slack/sync", h.SyncAgentSlackApp)
+					r.Post("/agents/{agentId}/slack/verify", h.VerifyAgentSlackApp)
 					r.Put("/agents/{agentId}/slack/credentials", h.UpdateAgentSlackCredentials)
 					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
 				})

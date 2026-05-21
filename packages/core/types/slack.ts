@@ -45,3 +45,11 @@ export interface UpdateAgentSlackCredentialsRequest {
   client_id?: string;
   client_secret?: string;
 }
+
+/** Verify endpoint result — probes Slack to confirm the app still
+ * exists on their side. The UI uses app_exists=false to render an
+ * orphan banner and offer one-click cleanup. */
+export interface AgentSlackVerifyResponse {
+  app_exists: boolean;
+  error?: string;
+}

@@ -100,6 +100,7 @@ import type {
   ProvisionAgentSlackResponse,
   AgentSlackCredentialsResponse,
   UpdateAgentSlackCredentialsRequest,
+  AgentSlackVerifyResponse,
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
@@ -1745,6 +1746,12 @@ export class ApiClient {
     await this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/credentials`, {
       method: "PUT",
       body: JSON.stringify(body),
+    });
+  }
+
+  async verifyAgentSlackApp(workspaceId: string, agentId: string): Promise<AgentSlackVerifyResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/verify`, {
+      method: "POST",
     });
   }
 }
