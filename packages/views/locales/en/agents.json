@@ -226,7 +226,20 @@
     "disconnecting": "Disconnecting…",
     "error_provision": "Provision failed",
     "error_sync": "Sync failed",
-    "error_disconnect": "Disconnect failed"
+    "error_disconnect": "Disconnect failed",
+    "credentials_title": "OAuth credentials",
+    "credentials_description": "Slack returns these when the app is created and rotates them if you reset them in the Slack dashboard. Paste them here to keep this agent's install flow working.",
+    "credentials_missing": "OAuth credentials are missing. Paste them from the Slack app's Basic Information page to enable installation.",
+    "credentials_client_id_label": "Client ID",
+    "credentials_client_secret_label": "Client Secret",
+    "credentials_client_secret_placeholder": "Leave blank to keep current",
+    "credentials_secret_saved": "Saved",
+    "credentials_secret_not_saved": "Not set",
+    "credentials_edit": "Edit credentials",
+    "credentials_save": "Save credentials",
+    "credentials_saving": "Saving…",
+    "credentials_cancel": "Cancel",
+    "error_credentials": "Could not save credentials"
   },
   "create_dialog": {
     "title_create": "Create Agent",

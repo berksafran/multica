@@ -367,15 +367,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 				// Slack integration — read status as a member; provision /
 				// install / sync / disconnect are admin-only because each
-				// mints or destroys an external Slack App.
+				// mints or destroys an external Slack App. Credentials
+				// edit also admin-only since the client_secret is an
+				// install-flow gating capability.
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/agents/{agentId}/slack", h.GetAgentSlackStatus)
+					r.Get("/agents/{agentId}/slack/credentials", h.GetAgentSlackCredentials)
 				})
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Post("/agents/{agentId}/slack/provision", h.ProvisionAgentSlackApp)
 					r.Post("/agents/{agentId}/slack/sync", h.SyncAgentSlackApp)
+					r.Put("/agents/{agentId}/slack/credentials", h.UpdateAgentSlackCredentials)
 					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
 				})
 			})

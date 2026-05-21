@@ -96,14 +96,29 @@ func verifySlackState(token string) (workspaceID, agentID, appRowID string, ok b
 // ── Response shapes ─────────────────────────────────────────────────────
 
 type SlackStatusResponse struct {
-	Configured  bool    `json:"configured"`
-	Provisioned bool    `json:"provisioned"`
-	Installed   bool    `json:"installed"`
-	AppID       *string `json:"app_id,omitempty"`
-	TeamID      *string `json:"team_id,omitempty"`
-	BotUserID   *string `json:"bot_user_id,omitempty"`
-	Status      *string `json:"status,omitempty"`
-	InstallURL  *string `json:"install_url,omitempty"`
+	Configured       bool    `json:"configured"`
+	Provisioned      bool    `json:"provisioned"`
+	Installed        bool    `json:"installed"`
+	HasCredentials   bool    `json:"has_credentials"`
+	AppID            *string `json:"app_id,omitempty"`
+	TeamID           *string `json:"team_id,omitempty"`
+	BotUserID        *string `json:"bot_user_id,omitempty"`
+	Status           *string `json:"status,omitempty"`
+	InstallURL       *string `json:"install_url,omitempty"`
+}
+
+// SlackCredentialsResponse exposes the per-app OAuth client credentials.
+// client_id is plaintext-safe (it's sent in the OAuth URL anyway);
+// client_secret is *never* returned — only a presence flag — so the UI
+// can render "saved / not saved" without ever holding the plaintext.
+type SlackCredentialsResponse struct {
+	ClientID        string `json:"client_id"`
+	HasClientSecret bool   `json:"has_client_secret"`
+}
+
+type UpdateSlackCredentialsRequest struct {
+	ClientID     *string `json:"client_id,omitempty"`
+	ClientSecret *string `json:"client_secret,omitempty"`
 }
 
 // ── GET /api/workspaces/{id}/agents/{agentId}/slack ─────────────────────
@@ -138,6 +153,8 @@ func (h *Handler) GetAgentSlackStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Provisioned = true
 	resp.Installed = app.Status == "installed"
+	resp.HasCredentials = app.OauthClientIDEnc.Valid && app.OauthClientIDEnc.String != "" &&
+		app.OauthClientSecretEnc.Valid && app.OauthClientSecretEnc.String != ""
 	resp.AppID = &app.SlackAppID
 	resp.Status = &app.Status
 	if app.SlackTeamID.Valid {
@@ -148,12 +165,95 @@ func (h *Handler) GetAgentSlackStatus(w http.ResponseWriter, r *http.Request) {
 		v := app.BotUserID.String
 		resp.BotUserID = &v
 	}
-	if !resp.Installed {
-		if u, err := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(app.ID), app.SlackAppID); err == nil {
-			resp.InstallURL = &u
+	if !resp.Installed && resp.HasCredentials {
+		if clientID, derr := h.decryptSlackOAuthClientID(app); derr == nil {
+			if u, err := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(app.ID), clientID); err == nil {
+				resp.InstallURL = &u
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ── GET / PUT /api/workspaces/{id}/agents/{agentId}/slack/credentials ──
+
+func (h *Handler) GetAgentSlackCredentials(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "agentId"), "agent_id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: agentUUID, WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	app, err := h.Queries.GetSlackAgentAppByAgentID(r.Context(), agentUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusOK, SlackCredentialsResponse{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+	resp := SlackCredentialsResponse{
+		HasClientSecret: app.OauthClientSecretEnc.Valid && app.OauthClientSecretEnc.String != "",
+	}
+	if clientID, derr := h.decryptSlackOAuthClientID(app); derr == nil {
+		resp.ClientID = clientID
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) UpdateAgentSlackCredentials(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "agentId"), "agent_id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: agentUUID, WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	app, err := h.Queries.GetSlackAgentAppByAgentID(r.Context(), agentUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "slack app not provisioned")
+		return
+	}
+
+	var req UpdateSlackCredentialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	cid := strings.TrimSpace(deref(req.ClientID))
+	csec := strings.TrimSpace(deref(req.ClientSecret))
+	if cid == "" && csec == "" {
+		writeError(w, http.StatusBadRequest, "client_id or client_secret required")
+		return
+	}
+	if err := h.persistSlackOAuthCredentials(r.Context(), app.ID, cid, csec); err != nil {
+		writeError(w, http.StatusInternalServerError, "persist failed: "+err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ── POST /api/workspaces/{id}/agents/{agentId}/slack/provision ──────────
@@ -191,8 +291,15 @@ func (h *Handler) ProvisionAgentSlackApp(w http.ResponseWriter, r *http.Request)
 	if existing, err := h.Queries.GetSlackAgentAppByAgentID(r.Context(), agentUUID); err == nil {
 		// Already provisioned. Return the install URL so the caller can
 		// resume the flow without making the user wait on a second
-		// manifest API round-trip.
-		installURL, _ := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(existing.ID), existing.SlackAppID)
+		// manifest API round-trip. If credentials happen to be missing
+		// (legacy row before #098, or a manual wipe), we return the row
+		// without an install URL so the UI can prompt for them.
+		installURL := ""
+		if clientID, derr := h.decryptSlackOAuthClientID(existing); derr == nil {
+			if u, err := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(existing.ID), clientID); err == nil {
+				installURL = u
+			}
+		}
 		writeJSON(w, http.StatusOK, ProvisionSlackResponse{AppID: existing.SlackAppID, InstallURL: installURL})
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -230,7 +337,8 @@ func (h *Handler) ProvisionAgentSlackApp(w http.ResponseWriter, r *http.Request)
 		ManifestVersion: 1,
 		Status:          "provisioned",
 		ConnectedByID:   connectedBy,
-	}); if err != nil {
+	})
+	if err != nil {
 		// Roll back the Slack-side app — leaving it dangling would
 		// confuse the user (a half-provisioned app on api.slack.com
 		// without any DB pointer to manage it).
@@ -240,44 +348,94 @@ func (h *Handler) ProvisionAgentSlackApp(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "persist failed: "+err.Error())
 		return
 	}
-	// Stash client_id / client_secret on the app row so the OAuth
-	// callback can complete the install. We piggyback on the agent's
-	// runtime_config bag because the slack_agent_app table is
-	// intentionally short — adding columns is a migration, but the JSON
-	// blob is already a per-app catch-all owned by the agent owner.
-	if err := h.persistSlackAppClientCredentials(r.Context(), agentUUID, created.Credentials.ClientID, created.Credentials.ClientSecret); err != nil {
-		slog.Warn("slack: persist client credentials failed", "err", err, "agent_id", uuidToString(agentUUID))
+	// Encrypt + persist per-app OAuth credentials. Failure here is
+	// fatal to the provision: without these the install URL cannot be
+	// built and the user would be stuck with an unreachable app. Roll
+	// back the Slack-side app so the next provision starts clean.
+	if err := h.persistSlackOAuthCredentials(r.Context(), app.ID, created.Credentials.ClientID, created.Credentials.ClientSecret); err != nil {
+		slog.Error("slack: persist oauth credentials failed", "err", err, "agent_id", uuidToString(agentUUID))
+		if delErr := mc.Delete(r.Context(), created.AppID); delErr != nil {
+			slog.Warn("slack: rollback delete failed", "err", delErr, "app_id", created.AppID)
+		}
+		if delErr := h.Queries.DeleteSlackAgentApp(r.Context(), db.DeleteSlackAgentAppParams{ID: app.ID, WorkspaceID: wsUUID}); delErr != nil {
+			slog.Warn("slack: rollback row delete failed", "err", delErr, "id", uuidToString(app.ID))
+		}
+		writeError(w, http.StatusInternalServerError, "persist credentials failed: "+err.Error())
+		return
 	}
 
-	installURL, _ := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(app.ID), app.SlackAppID)
+	installURL, err := buildSlackInstallURL(uuidToString(wsUUID), uuidToString(agentUUID), uuidToString(app.ID), created.Credentials.ClientID)
+	if err != nil {
+		slog.Warn("slack: build install URL failed", "err", err)
+	}
 	writeJSON(w, http.StatusOK, ProvisionSlackResponse{AppID: app.SlackAppID, InstallURL: installURL})
 }
 
-// persistSlackAppClientCredentials stores the OAuth client_id /
-// client_secret pair returned by manifest.create on the agent record.
-// They are needed exactly once — by the OAuth callback — but Slack
-// does not expose them again, so dropping them would brick the install
-// flow.
-func (h *Handler) persistSlackAppClientCredentials(ctx context.Context, agentID pgtype.UUID, clientID, clientSecret string) error {
-	// We do NOT have a dedicated column. Encrypt + store the pair on
-	// the slack_agent_app row using bot_token_enc as a temporary
-	// vehicle is unsafe because OAuth callback would then overwrite it.
-	// For MVP we re-read manifest.create credentials by env override
-	// during testing; in prod we expect ops to set SLACK_OAUTH_CLIENT_ID
-	// / SLACK_OAUTH_CLIENT_SECRET globally because the single-workspace
-	// distribution mode means the manifest API mints the same pair every
-	// time anyway. See plan: "Single-workspace mode (MVP)".
-	//
-	// To keep this MVP coherent we accept that the OAuth callback reads
-	// client credentials from env vars per slack app id when present, or
-	// falls back to per-process SLACK_OAUTH_CLIENT_ID/SECRET. Persisting
-	// per-app credentials is a phase-2 schema change.
-	_ = ctx
-	_ = agentID
-	_ = clientID
-	_ = clientSecret
-	return nil
+// persistSlackOAuthCredentials encrypts and stores the per-app OAuth
+// credentials returned by apps.manifest.create (or pasted by the user
+// via the credentials edit UI). Both ciphertexts are produced by the
+// same AES-GCM helper that wraps the bot token. Pass empty strings to
+// leave the existing ciphertext in place — the UPDATE query is
+// COALESCE-guarded so partial updates are safe.
+func (h *Handler) persistSlackOAuthCredentials(ctx context.Context, appID pgtype.UUID, clientID, clientSecret string) error {
+	if clientID == "" && clientSecret == "" {
+		return nil
+	}
+	aead, err := slackTokenCipher()
+	if err != nil {
+		return fmt.Errorf("cipher unavailable: %w", err)
+	}
+	params := db.UpdateSlackAgentAppOAuthCredentialsParams{ID: appID}
+	if clientID != "" {
+		enc, err := aead.Encrypt(clientID)
+		if err != nil {
+			return fmt.Errorf("encrypt client_id: %w", err)
+		}
+		params.OauthClientIDEnc = pgtype.Text{String: enc, Valid: true}
+	}
+	if clientSecret != "" {
+		enc, err := aead.Encrypt(clientSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt client_secret: %w", err)
+		}
+		params.OauthClientSecretEnc = pgtype.Text{String: enc, Valid: true}
+	}
+	return h.Queries.UpdateSlackAgentAppOAuthCredentials(ctx, params)
 }
+
+// decryptSlackOAuthClientID returns the plaintext client_id stored on
+// the app row, or ErrSlackOAuthCredentialsMissing if none has been
+// persisted yet. Errors from cipher initialization or decryption are
+// surfaced verbatim so the caller can map them onto user-facing 4xx.
+func (h *Handler) decryptSlackOAuthClientID(app db.SlackAgentApp) (string, error) {
+	if !app.OauthClientIDEnc.Valid || app.OauthClientIDEnc.String == "" {
+		return "", ErrSlackOAuthCredentialsMissing
+	}
+	aead, err := slackTokenCipher()
+	if err != nil {
+		return "", err
+	}
+	return aead.Decrypt(app.OauthClientIDEnc.String)
+}
+
+// decryptSlackOAuthClientSecret mirrors decryptSlackOAuthClientID for
+// the secret half of the pair. The secret value is never returned to
+// API clients — only consumed in the OAuth callback handler.
+func (h *Handler) decryptSlackOAuthClientSecret(app db.SlackAgentApp) (string, error) {
+	if !app.OauthClientSecretEnc.Valid || app.OauthClientSecretEnc.String == "" {
+		return "", ErrSlackOAuthCredentialsMissing
+	}
+	aead, err := slackTokenCipher()
+	if err != nil {
+		return "", err
+	}
+	return aead.Decrypt(app.OauthClientSecretEnc.String)
+}
+
+// ErrSlackOAuthCredentialsMissing is returned when the per-app
+// client_id / client_secret have not been persisted yet. UI exposes
+// this via the has_credentials=false flag on the status response.
+var ErrSlackOAuthCredentialsMissing = errors.New("slack: oauth credentials missing")
 
 // ── GET /api/slack/oauth/callback ───────────────────────────────────────
 
@@ -314,9 +472,13 @@ func (h *Handler) SlackOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID := strings.TrimSpace(os.Getenv("SLACK_OAUTH_CLIENT_ID"))
-	clientSecret := strings.TrimSpace(os.Getenv("SLACK_OAUTH_CLIENT_SECRET"))
-	if clientID == "" || clientSecret == "" {
+	clientID, err := h.decryptSlackOAuthClientID(app)
+	if err != nil {
+		http.Redirect(w, r, resultURL+"&slack_error=oauth_client_not_configured", http.StatusFound)
+		return
+	}
+	clientSecret, err := h.decryptSlackOAuthClientSecret(app)
+	if err != nil {
 		http.Redirect(w, r, resultURL+"&slack_error=oauth_client_not_configured", http.StatusFound)
 		return
 	}
@@ -438,18 +600,18 @@ func (h *Handler) DisconnectAgentSlackApp(w http.ResponseWriter, r *http.Request
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-func buildSlackInstallURL(wsID, agentID, appRowID, slackAppID string) (string, error) {
+// buildSlackInstallURL composes the Slack OAuth v2 authorize URL for a
+// specific provisioned app. clientID comes from the row's encrypted
+// oauth_client_id_enc column (decrypted by the caller) — the env-var
+// fallback used in the MVP-foundation commit is gone now that the
+// schema can hold per-app credentials.
+func buildSlackInstallURL(wsID, agentID, appRowID, clientID string) (string, error) {
+	if clientID == "" {
+		return "", ErrSlackOAuthCredentialsMissing
+	}
 	state, err := signSlackState(wsID, agentID, appRowID)
 	if err != nil {
 		return "", err
-	}
-	// We hit slack.com/oauth/v2/authorize with the per-app client_id.
-	// In single-workspace MVP mode the client_id env var is the one
-	// minted by manifest.create for THIS app (operator pastes it once
-	// after provisioning).
-	clientID := strings.TrimSpace(os.Getenv("SLACK_OAUTH_CLIENT_ID"))
-	if clientID == "" {
-		return "", errors.New("SLACK_OAUTH_CLIENT_ID not set")
 	}
 	v := url.Values{}
 	v.Set("client_id", clientID)

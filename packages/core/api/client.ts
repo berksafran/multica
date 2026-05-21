@@ -98,6 +98,8 @@ import type {
   GitHubConnectResponse,
   AgentSlackStatusResponse,
   ProvisionAgentSlackResponse,
+  AgentSlackCredentialsResponse,
+  UpdateAgentSlackCredentialsRequest,
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
@@ -1732,6 +1734,17 @@ export class ApiClient {
   async disconnectAgentSlackApp(workspaceId: string, agentId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack`, {
       method: "DELETE",
+    });
+  }
+
+  async getAgentSlackCredentials(workspaceId: string, agentId: string): Promise<AgentSlackCredentialsResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/credentials`);
+  }
+
+  async updateAgentSlackCredentials(workspaceId: string, agentId: string, body: UpdateAgentSlackCredentialsRequest): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/credentials`, {
+      method: "PUT",
+      body: JSON.stringify(body),
     });
   }
 }

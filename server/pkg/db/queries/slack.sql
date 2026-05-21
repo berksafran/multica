@@ -40,6 +40,17 @@ SET slack_team_id = $2,
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateSlackAgentAppOAuthCredentials :exec
+-- Stores the per-app OAuth client_id + client_secret returned by
+-- apps.manifest.create. Either field may be omitted on update (caller
+-- passes the existing ciphertext to keep it). Both ciphertexts are
+-- produced by the app-level AES-GCM helper.
+UPDATE slack_agent_app
+SET oauth_client_id_enc     = COALESCE(sqlc.narg('oauth_client_id_enc'),     oauth_client_id_enc),
+    oauth_client_secret_enc = COALESCE(sqlc.narg('oauth_client_secret_enc'), oauth_client_secret_enc),
+    updated_at              = now()
+WHERE id = $1;
+
 -- name: UpdateSlackAgentAppManifestVersion :exec
 UPDATE slack_agent_app
 SET manifest_version = $2,

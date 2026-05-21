@@ -91,6 +91,8 @@ export type {
 export type {
   AgentSlackStatusResponse,
   ProvisionAgentSlackResponse,
+  AgentSlackCredentialsResponse,
+  UpdateAgentSlackCredentialsRequest,
 } from "./slack";
 export type {
   Autopilot,
