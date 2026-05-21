@@ -83,6 +83,20 @@ func (h *Handler) HandleSlackWebhook(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// Debug visibility: every Slack-delivered event is logged so
+		// LOG_LEVEL=debug surfaces the raw stream for troubleshooting.
+		// Kept off Info/Warn because non-mention channels can deliver
+		// many of these per minute.
+		slog.Debug("slack: event received",
+			"agent_id", uuidToString(app.AgentID),
+			"type", ev.Type,
+			"channel", ev.Channel,
+			"channel_type", ev.ChannelType,
+			"thread_ts", ev.ThreadTS,
+			"user", ev.User,
+			"has_bot_id", ev.BotID != "",
+			"subtype", ev.Subtype,
+		)
 		// Run the dispatch in a background goroutine: Slack only gives
 		// us 3 seconds to acknowledge before it retries the delivery,
 		// and the LLM enqueue path can take longer than that under
@@ -116,26 +130,32 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 			// DM — accept
 		case "channel", "group":
 			if ev.ThreadTS == "" {
+				slog.Debug("slack: drop (channel msg without thread)", "channel", ev.Channel)
 				return // top-level channel message, not for us
 			}
 			// reply: must match a known session thread (checked below)
 		default:
+			slog.Debug("slack: drop (unknown channel_type)", "channel_type", ev.ChannelType)
 			return
 		}
 	default:
+		slog.Debug("slack: drop (event type outside whitelist)", "type", ev.Type)
 		return
 	}
 
 	// Cost guard 2: ignore the bot's own messages (echo loop).
 	if ev.BotID != "" {
+		slog.Debug("slack: drop (event has bot_id, echo prevention)", "bot_id", ev.BotID)
 		return
 	}
 	if app.BotUserID.Valid && ev.User == app.BotUserID.String {
+		slog.Debug("slack: drop (event from own bot_user)", "user", ev.User)
 		return
 	}
 
 	// Cost guard 3: drop edits/deletes/system subtypes.
 	if ev.Subtype != "" {
+		slog.Debug("slack: drop (subtype set)", "subtype", ev.Subtype)
 		return
 	}
 
@@ -177,6 +197,13 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 		slog.Warn("slack: enqueue chat task failed", "err", err, "session_id", uuidToString(session.ID))
 		return
 	}
+	slog.Info("slack: enqueued chat task",
+		"agent_id", uuidToString(app.AgentID),
+		"session_id", uuidToString(session.ID),
+		"task_id", uuidToString(task.ID),
+		"channel", ev.Channel,
+		"thread_ts", threadTS,
+	)
 
 	if err := h.Queries.TouchChatSession(ctx, session.ID); err != nil {
 		slog.Debug("slack: touch session failed", "err", err)
