@@ -166,6 +166,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.DaemonTokenCache = daemonTokenCache
 	h.MembershipCache = auth.NewMembershipCache(rdb)
 
+	// Wire the Slack outbound bridge: assistant messages on Slack-originated
+	// chat sessions are forwarded to the Slack thread via Bus.Subscribe.
+	h.RegisterSlackOutboundListeners()
+
 	// Empty-claim cache: lets the daemon poll path skip a Postgres
 	// scan when a recent check confirmed the runtime had no queued
 	// task. Returns nil when rdb is nil — TaskService treats that
@@ -263,6 +267,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 
+	// Slack Events API webhook (per-agent endpoint, signature verified
+	// against the per-app secret in slack_agent_app) and OAuth callback.
+	r.Post("/api/webhooks/slack/{agent_id}", h.HandleSlackWebhook)
+	r.Get("/api/slack/oauth/callback", h.SlackOAuthCallback)
+
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache))
@@ -354,6 +363,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+				})
+
+				// Slack integration — read status as a member; provision /
+				// install / sync / disconnect are admin-only because each
+				// mints or destroys an external Slack App.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/agents/{agentId}/slack", h.GetAgentSlackStatus)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/agents/{agentId}/slack/provision", h.ProvisionAgentSlackApp)
+					r.Post("/agents/{agentId}/slack/sync", h.SyncAgentSlackApp)
+					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
 				})
 			})
 		})
