@@ -116,28 +116,28 @@ func (h *Handler) HandleSlackWebhook(w http.ResponseWriter, r *http.Request) {
 // events into Multica chat messages. Returning early without writing
 // anywhere is the intended path for filtered-out events.
 func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, teamID string, ev *slack.InnerEvent) {
-	// Cost guard 1: event type whitelist.
+	// Cost guard 1: strict mention-only event whitelist.
+	//   - app_mention: explicit invocation in any channel (top-level
+	//     or inside a thread); Slack fires this for every @bot mention
+	//   - message.im: DM = implicit invocation
+	//   - anything else: drop
+	// The earlier "sticky thread" mode (process thread replies without
+	// re-mention) was removed at user request — it burned LLM tokens
+	// on every reply in a busy thread and made cost unpredictable. Now
+	// the rule is: no mention, no LLM call.
 	switch ev.Type {
 	case "app_mention":
-		// always accept
+		// accept (Slack only fires this on explicit @bot mention)
 	case "message":
-		// Slack delivers DMs and channel replies under the same "message"
-		// type; the channel_type distinguishes them. message.channels is
-		// only useful when the user is replying inside an existing
-		// session thread; standalone channel chatter is dropped.
-		switch ev.ChannelType {
-		case "im":
-			// DM — accept
-		case "channel", "group":
-			if ev.ThreadTS == "" {
-				slog.Debug("slack: drop (channel msg without thread)", "channel", ev.Channel)
-				return // top-level channel message, not for us
-			}
-			// reply: must match a known session thread (checked below)
-		default:
-			slog.Debug("slack: drop (unknown channel_type)", "channel_type", ev.ChannelType)
+		if ev.ChannelType != "im" {
+			slog.Debug("slack: drop (non-DM message without mention)",
+				"channel", ev.Channel,
+				"channel_type", ev.ChannelType,
+				"thread_ts", ev.ThreadTS,
+			)
 			return
 		}
+		// DM — accept
 	default:
 		slog.Debug("slack: drop (event type outside whitelist)", "type", ev.Type)
 		return

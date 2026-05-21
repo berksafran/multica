@@ -95,10 +95,15 @@ func (h *Handler) handleChatDoneEventForSlack(ctx context.Context, ev events.Eve
 		return
 	}
 
+	// Translate standard Markdown (LLM output) to Slack's mrkdwn so
+	// **bold**, [text](url), and # headers actually render instead of
+	// leaking literal asterisks/brackets into the thread.
+	text := slack.ConvertMarkdownToSlack(payload.Content)
+
 	client := slack.NewClient(botToken)
 	resp, err := client.PostMessage(ctx, slack.PostMessageRequest{
 		Channel:  link.SlackChannelID,
-		Text:     payload.Content,
+		Text:     text,
 		ThreadTS: link.SlackThreadTs,
 	})
 	if err != nil {
