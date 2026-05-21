@@ -96,6 +96,8 @@ import type {
   GitHubPullRequest,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
+  AgentSlackStatusResponse,
+  ProvisionAgentSlackResponse,
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
@@ -1708,5 +1710,28 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  // Slack integration (per-agent)
+  async getAgentSlackStatus(workspaceId: string, agentId: string): Promise<AgentSlackStatusResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack`);
+  }
+
+  async provisionAgentSlackApp(workspaceId: string, agentId: string): Promise<ProvisionAgentSlackResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/provision`, {
+      method: "POST",
+    });
+  }
+
+  async syncAgentSlackApp(workspaceId: string, agentId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack/sync`, {
+      method: "POST",
+    });
+  }
+
+  async disconnectAgentSlackApp(workspaceId: string, agentId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/slack`, {
+      method: "DELETE",
+    });
   }
 }

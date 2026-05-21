@@ -89,6 +89,10 @@ export type {
   GitHubConnectResponse,
 } from "./github";
 export type {
+  AgentSlackStatusResponse,
+  ProvisionAgentSlackResponse,
+} from "./slack";
+export type {
   Autopilot,
   AutopilotStatus,
   AutopilotExecutionMode,
