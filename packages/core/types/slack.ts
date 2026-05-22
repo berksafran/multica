@@ -27,6 +27,20 @@ export interface AgentSlackStatusResponse {
   /** When provisioned + has_credentials but not yet installed, the URL
    * the user should open to install the app into a Slack workspace. */
   install_url?: string;
+  /** Per-agent count of messages preceding an in-thread mention to
+   * fetch from Slack and prepend to the user turn. 0 = dormant. The
+   * server enforces an upper bound of 20. Optional on the wire because
+   * an older backend won't return it; UI defaults to 0 in that case. */
+  recent_context_thread_count?: number;
+  /** Same as above for top-level channel mentions. Independent so a
+   * busy channel can stay context-free while threads (smaller, more
+   * focused) opt in. */
+  recent_context_channel_count?: number;
+}
+
+export interface UpdateAgentSlackSettingsRequest {
+  recent_context_thread_count: number;
+  recent_context_channel_count: number;
 }
 
 export interface ProvisionAgentSlackResponse {

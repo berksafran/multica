@@ -105,6 +105,19 @@ type SlackStatusResponse struct {
 	BotUserID      *string `json:"bot_user_id,omitempty"`
 	Status         *string `json:"status,omitempty"`
 	InstallURL     *string `json:"install_url,omitempty"`
+	// Per-agent opt-in counts for fetching surrounding context before
+	// a mention. 0 means dormant. Always present on a provisioned app.
+	RecentContextThreadCount  int `json:"recent_context_thread_count"`
+	RecentContextChannelCount int `json:"recent_context_channel_count"`
+}
+
+// UpdateSlackSettingsRequest covers the editable per-agent runtime
+// knobs that don't belong with OAuth credentials (those have their own
+// endpoint). Both fields are required so a partial PUT cannot leave
+// the agent in a half-configured state.
+type UpdateSlackSettingsRequest struct {
+	RecentContextThreadCount  int `json:"recent_context_thread_count"`
+	RecentContextChannelCount int `json:"recent_context_channel_count"`
 }
 
 // SlackVerifyResponse is the dedicated probe result returned by
@@ -162,6 +175,8 @@ func (h *Handler) GetAgentSlackStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Provisioned = true
 	resp.Installed = app.Status == "installed"
+	resp.RecentContextThreadCount = int(app.RecentContextThreadCount)
+	resp.RecentContextChannelCount = int(app.RecentContextChannelCount)
 	resp.HasCredentials = app.OauthClientIDEnc.Valid && app.OauthClientIDEnc.String != "" &&
 		app.OauthClientSecretEnc.Valid && app.OauthClientSecretEnc.String != ""
 	resp.AppID = &app.SlackAppID
@@ -263,6 +278,57 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ── PUT /api/workspaces/{id}/agents/{agentId}/slack/settings ────────────
+
+// UpdateAgentSlackSettings persists the recent-context counts. Kept
+// separate from /credentials because OAuth secrets and runtime knobs
+// have very different rotation cadences and audit profiles — bundling
+// them would force the UI to re-send credentials on every settings
+// change.
+func (h *Handler) UpdateAgentSlackSettings(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "agentId"), "agent_id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: agentUUID, WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	app, err := h.Queries.GetSlackAgentAppByAgentID(r.Context(), agentUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "slack app not provisioned")
+		return
+	}
+
+	var req UpdateSlackSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Range check mirrors the CHECK constraint so the user sees a 400,
+	// not a 500 swallowed by the generic SQL error path.
+	if req.RecentContextThreadCount < 0 || req.RecentContextThreadCount > 20 ||
+		req.RecentContextChannelCount < 0 || req.RecentContextChannelCount > 20 {
+		writeError(w, http.StatusBadRequest, "context counts must be between 0 and 20")
+		return
+	}
+	if err := h.Queries.UpdateSlackAgentAppRecentContext(r.Context(), db.UpdateSlackAgentAppRecentContextParams{
+		ID:                        app.ID,
+		RecentContextThreadCount:  int32(req.RecentContextThreadCount),
+		RecentContextChannelCount: int32(req.RecentContextChannelCount),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── POST /api/workspaces/{id}/agents/{agentId}/slack/provision ──────────

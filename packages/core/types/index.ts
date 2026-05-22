@@ -93,6 +93,7 @@ export type {
   ProvisionAgentSlackResponse,
   AgentSlackCredentialsResponse,
   UpdateAgentSlackCredentialsRequest,
+  UpdateAgentSlackSettingsRequest,
   AgentSlackVerifyResponse,
 } from "./slack";
 export type {

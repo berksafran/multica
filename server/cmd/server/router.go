@@ -396,6 +396,7 @@ func newRouterAndHandlerInternal(pool *pgxpool.Pool, hub *realtime.Hub, bus *eve
 					r.Post("/agents/{agentId}/slack/sync", h.SyncAgentSlackApp)
 					r.Post("/agents/{agentId}/slack/verify", h.VerifyAgentSlackApp)
 					r.Put("/agents/{agentId}/slack/credentials", h.UpdateAgentSlackCredentials)
+					r.Put("/agents/{agentId}/slack/settings", h.UpdateAgentSlackSettings)
 					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
 					// Workspace-scoped URL keeps reuse of the role gate; the
 					// row itself is a process-wide singleton.

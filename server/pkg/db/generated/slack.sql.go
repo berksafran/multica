@@ -497,6 +497,28 @@ func (q *Queries) UpdateSlackAgentAppOAuthCredentials(ctx context.Context, arg U
 	return err
 }
 
+const updateSlackAgentAppRecentContext = `-- name: UpdateSlackAgentAppRecentContext :exec
+UPDATE slack_agent_app
+SET recent_context_thread_count  = $2,
+    recent_context_channel_count = $3,
+    updated_at                   = now()
+WHERE id = $1
+`
+
+type UpdateSlackAgentAppRecentContextParams struct {
+	ID                        pgtype.UUID `json:"id"`
+	RecentContextThreadCount  int32       `json:"recent_context_thread_count"`
+	RecentContextChannelCount int32       `json:"recent_context_channel_count"`
+}
+
+// Updates the per-agent counts that gate whether we fetch surrounding
+// Slack messages before a mention. CHECK constraints (0..20) live on
+// the table so an out-of-range value here fails the query, not silently.
+func (q *Queries) UpdateSlackAgentAppRecentContext(ctx context.Context, arg UpdateSlackAgentAppRecentContextParams) error {
+	_, err := q.db.Exec(ctx, updateSlackAgentAppRecentContext, arg.ID, arg.RecentContextThreadCount, arg.RecentContextChannelCount)
+	return err
+}
+
 const updateSlackChatSessionLinkPermalink = `-- name: UpdateSlackChatSessionLinkPermalink :exec
 UPDATE slack_chat_session_link
 SET permalink = $2

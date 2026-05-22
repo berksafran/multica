@@ -242,7 +242,15 @@
     "credentials_save": "保存凭据",
     "credentials_saving": "保存中…",
     "credentials_cancel": "取消",
-    "error_credentials": "保存凭据失败"
+    "error_credentials": "保存凭据失败",
+    "context_title": "最近消息上下文",
+    "context_description": "当此智能体在 Slack 中被提及时,可选地拉取该提及之前所在线程或频道的 N 条消息,作为背景传递给 AI。数值越高,模型获得的上下文越多,但每次调用的令牌成本也会增加。两者上限均为 20。",
+    "context_thread_label": "线程提及前的消息数",
+    "context_channel_label": "频道提及前的消息数",
+    "context_hint": "设为 0 即可禁用。无论此设置如何,私信会话始终使用智能体自身的历史记录。",
+    "context_save": "保存上下文设置",
+    "context_saving": "保存中…",
+    "error_context": "保存上下文设置失败"
   },
   "create_dialog": {
     "title_create": "创建智能体",

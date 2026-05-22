@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Pencil,
   RefreshCw,
+  Layers,
 } from "lucide-react";
 import type { Agent } from "@multica/core/types";
 import { api } from "@multica/core/api";
@@ -378,6 +379,19 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
         />
       )}
 
+      {/* Per-agent recent-context settings: only useful once installed
+          (no bot token = no API to fetch from). Defaults to 0/0 so the
+          feature stays dormant for agents that don't opt in. */}
+      {status.installed && (
+        <SettingsSection
+          workspaceId={workspaceId}
+          agentId={agent.id}
+          threadCount={status.recent_context_thread_count ?? 0}
+          channelCount={status.recent_context_channel_count ?? 0}
+          onError={setError}
+        />
+      )}
+
       {/* Verify control lives in the installed-state status header
           (and inline next to the not-installed actions when needed) so
           users can manually re-check after a Slack-side change without
@@ -591,6 +605,137 @@ function CredentialsSection({
           </div>
         </form>
       )}
+    </section>
+  );
+}
+
+const RECENT_CONTEXT_MAX = 20;
+
+function clampCount(raw: string): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n > RECENT_CONTEXT_MAX) return RECENT_CONTEXT_MAX;
+  return n;
+}
+
+function SettingsSection({
+  workspaceId,
+  agentId,
+  threadCount,
+  channelCount,
+  onError,
+}: {
+  workspaceId: string;
+  agentId: string;
+  threadCount: number;
+  channelCount: number;
+  onError: (msg: string | null) => void;
+}) {
+  const { t } = useT("agents");
+  const qc = useQueryClient();
+
+  // Local edit state seeded from the status query. We deliberately do
+  // NOT useEffect-reset on every status refetch — that would clobber
+  // the user's in-flight edits during a background refresh.
+  const [thread, setThread] = useState(String(threadCount));
+  const [channel, setChannel] = useState(String(channelCount));
+
+  const dirty = clampCount(thread) !== threadCount || clampCount(channel) !== channelCount;
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      api.updateAgentSlackSettings(workspaceId, agentId, {
+        recent_context_thread_count: clampCount(thread),
+        recent_context_channel_count: clampCount(channel),
+      }),
+    onSuccess: () => {
+      onError(null);
+      qc.invalidateQueries({ queryKey: slackStatusQueryKey(workspaceId, agentId) });
+    },
+    onError: (e) =>
+      onError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_context)),
+  });
+
+  const saving = saveMutation.isPending;
+
+  return (
+    <section className="overflow-hidden rounded-lg border bg-background">
+      <header className="flex items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Layers className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <h3 className="text-xs font-medium">
+            {t(($) => $.slack_tab.context_title)}
+          </h3>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={t(($) => $.slack_tab.context_description)}
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                </button>
+              }
+            />
+            <TooltipContent className="max-w-xs whitespace-normal px-3 py-2 text-left leading-snug">
+              {t(($) => $.slack_tab.context_description)}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </header>
+
+      <form
+        className="flex flex-col gap-3 px-3 py-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!dirty) return;
+          saveMutation.mutate();
+        }}
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-muted-foreground">
+              {t(($) => $.slack_tab.context_thread_label)}
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={RECENT_CONTEXT_MAX}
+              step={1}
+              inputMode="numeric"
+              className="rounded-md border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              value={thread}
+              onChange={(e) => setThread(e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-muted-foreground">
+              {t(($) => $.slack_tab.context_channel_label)}
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={RECENT_CONTEXT_MAX}
+              step={1}
+              inputMode="numeric"
+              className="rounded-md border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+            />
+          </label>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {t(($) => $.slack_tab.context_hint)}
+        </p>
+        <div>
+          <Button type="submit" size="sm" disabled={saving || !dirty}>
+            {saving
+              ? t(($) => $.slack_tab.context_saving)
+              : t(($) => $.slack_tab.context_save)}
+          </Button>
+        </div>
+      </form>
     </section>
   );
 }

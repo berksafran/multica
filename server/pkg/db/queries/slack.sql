@@ -57,6 +57,16 @@ SET manifest_version = $2,
     updated_at       = now()
 WHERE id = $1;
 
+-- name: UpdateSlackAgentAppRecentContext :exec
+-- Updates the per-agent counts that gate whether we fetch surrounding
+-- Slack messages before a mention. CHECK constraints (0..20) live on
+-- the table so an out-of-range value here fails the query, not silently.
+UPDATE slack_agent_app
+SET recent_context_thread_count  = $2,
+    recent_context_channel_count = $3,
+    updated_at                   = now()
+WHERE id = $1;
+
 -- name: MarkSlackAgentAppUninstalled :exec
 UPDATE slack_agent_app
 SET status        = 'uninstalled',

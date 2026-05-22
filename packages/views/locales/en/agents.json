@@ -246,7 +246,15 @@
     "credentials_save": "Save credentials",
     "credentials_saving": "Saving…",
     "credentials_cancel": "Cancel",
-    "error_credentials": "Could not save credentials"
+    "error_credentials": "Could not save credentials",
+    "context_title": "Recent message context",
+    "context_description": "When this agent is mentioned in Slack, optionally pull the N messages preceding the mention from the thread or channel and pass them to the AI as background. Higher values give the model more context but increase per-call token cost. Maximum is 20 each.",
+    "context_thread_label": "Messages before thread mention",
+    "context_channel_label": "Messages before channel mention",
+    "context_hint": "Set to 0 to disable. DMs always use the agent's own session history regardless of this setting.",
+    "context_save": "Save context settings",
+    "context_saving": "Saving…",
+    "error_context": "Could not save context settings"
   },
   "create_dialog": {
     "title_create": "Create Agent",
