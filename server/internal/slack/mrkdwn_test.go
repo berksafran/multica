@@ -50,6 +50,32 @@ func TestConvertMarkdownToSlack(t *testing.T) {
 			"**before**\n```\n**raw**\n```\n**after**",
 			"*before*\n```\n**raw**\n```\n*after*",
 		},
+
+		{
+			"simple table becomes aligned code block",
+			"| Key | Status |\n|---|---|\n| SFT-1 | Done |\n| SFT-22 | Open |",
+			"```\nKey     Status\n------  ------\nSFT-1   Done\nSFT-22  Open\n```",
+		},
+		{
+			"table without surrounding pipes",
+			"Key | Status\n---|---\nSFT-1 | Done",
+			"```\nKey    Status\n-----  ------\nSFT-1  Done\n```",
+		},
+		{
+			"table cells lose inner markdown (code-block tradeoff)",
+			"| Key | Summary |\n|---|---|\n| **A** | [link](https://x) |",
+			"```\nKey    Summary\n-----  -----------------\n**A**  [link](https://x)\n```",
+		},
+		{
+			"prose around table still converts and table is rewritten",
+			"# Issues\n| Key | Status |\n|---|---|\n| A | Done |\n**after**",
+			"*Issues*\n```\nKey  Status\n---  ------\nA    Done\n```\n*after*",
+		},
+		{
+			"pipe in prose without separator is not treated as table",
+			"use a | b to choose either option",
+			"use a | b to choose either option",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
