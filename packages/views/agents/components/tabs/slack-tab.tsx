@@ -77,6 +77,7 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
   });
 
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  const [verifiedAt, setVerifiedAt] = useState<number | null>(null);
 
   // Auto-clear the "Name synced" confirmation so it doesn't linger past
   // its useful window — otherwise the message implies a fresh sync on a
@@ -86,6 +87,12 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
     const handle = window.setTimeout(() => setSyncedAt(null), 4000);
     return () => window.clearTimeout(handle);
   }, [syncedAt]);
+
+  useEffect(() => {
+    if (verifiedAt === null) return;
+    const handle = window.setTimeout(() => setVerifiedAt(null), 4000);
+    return () => window.clearTimeout(handle);
+  }, [verifiedAt]);
 
   const syncMutation = useMutation({
     mutationFn: () => api.syncAgentSlackApp(workspaceId, agent.id),
@@ -115,8 +122,16 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
     onSuccess: (data) => {
       qc.setQueryData(slackVerifyQueryKey(workspaceId, agent.id), data);
       setError(null);
+      // Pulse a confirmation so the button click has a visible effect
+      // even on the healthy path — the orphan / stale banners only show
+      // up when something is wrong, so silent success looked like a
+      // dead button.
+      setVerifiedAt(Date.now());
     },
-    onError: (e) => setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_sync)),
+    onError: (e) => {
+      setVerifiedAt(null);
+      setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_sync));
+    },
   });
 
   if (statusQuery.isLoading) {
@@ -144,6 +159,13 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
   // with app_exists=false. While verify is loading / errored we trust
   // the local row to avoid flashing a misleading banner.
   const isOrphaned = status.provisioned && verifyQuery.data?.app_exists === false;
+  // Webhook drift: Slack still has the app, but its Event Subscription
+  // URL points at a stale host (ngrok restart, domain swap). Inbound
+  // events silently die in this state — surface it so the user clicks
+  // Sync instead of debugging tokens. Explicit === true so an older
+  // backend that omits the field never trips the banner.
+  const isRequestURLStale =
+    status.installed && verifyQuery.data?.request_url_stale === true;
 
   return (
     <div className="flex flex-col gap-6 px-4 py-6">
@@ -269,20 +291,58 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
                   {t(($) => $.slack_tab.status_installed)}
                 </span>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => verifyMutation.mutate()}
-                disabled={verifying}
-              >
-                <RefreshCw className={`mr-1.5 h-3 w-3 ${verifying ? "animate-spin" : ""}`} />
-                {verifying
-                  ? t(($) => $.slack_tab.verifying)
-                  : t(($) => $.slack_tab.verify_button)}
-              </Button>
+              <div className="flex items-center gap-2">
+                {verifiedAt !== null && !isOrphaned && !isRequestURLStale && (
+                  <span
+                    className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+                    role="status"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {t(($) => $.slack_tab.verify_no_issues)}
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => verifyMutation.mutate()}
+                  disabled={verifying}
+                >
+                  <RefreshCw className={`mr-1.5 h-3 w-3 ${verifying ? "animate-spin" : ""}`} />
+                  {verifying
+                    ? t(($) => $.slack_tab.verifying)
+                    : t(($) => $.slack_tab.verify_button)}
+                </Button>
+              </div>
             </div>
+            {isRequestURLStale && (
+              <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                    <p className="font-semibold">
+                      {t(($) => $.slack_tab.webhook_stale_title)}
+                    </p>
+                    <p className="text-amber-700/90 dark:text-amber-300/90">
+                      {t(($) => $.slack_tab.webhook_stale_description)}
+                    </p>
+                    {verifyQuery.data?.current_request_url && (
+                      <div className="flex flex-col gap-0.5 font-mono text-[11px] leading-snug">
+                        <span className="truncate">
+                          {t(($) => $.slack_tab.webhook_stale_current_label)}:{" "}
+                          {verifyQuery.data.current_request_url}
+                        </span>
+                        <span className="truncate">
+                          {t(($) => $.slack_tab.webhook_stale_expected_label)}:{" "}
+                          {verifyQuery.data.expected_request_url}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             <dl className="divide-y text-xs">
               {status.team_id && (
                 <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
@@ -397,7 +457,16 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
           users can manually re-check after a Slack-side change without
           waiting for the focus-driven refresh. */}
       {status.provisioned && !status.installed && (
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-end gap-2">
+          {verifiedAt !== null && !isOrphaned && (
+            <span
+              className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+              role="status"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {t(($) => $.slack_tab.verify_no_issues)}
+            </span>
+          )}
           <Button
             type="button"
             variant="ghost"

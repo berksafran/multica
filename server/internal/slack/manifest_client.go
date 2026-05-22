@@ -110,12 +110,14 @@ func (m *ManifestClient) Update(ctx context.Context, appID string, manifest Mani
 }
 
 // ManifestExportResponse is the trimmed apps.manifest.export response.
-// We only consume OK/Error in the handler — confirming the app still
-// exists is enough to flag local rows as orphaned when this call fails.
+// Manifest is deserialized into our own struct so callers can inspect
+// what Slack actually has on file (e.g. compare the live event_subscriptions
+// request_url against the deployment's current PUBLIC_API_URL — when those
+// drift, Slack delivers nothing and the integration goes silently dead).
 type ManifestExportResponse struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
-	Manifest any    `json:"manifest,omitempty"`
+	OK       bool     `json:"ok"`
+	Error    string   `json:"error,omitempty"`
+	Manifest Manifest `json:"manifest"`
 }
 
 // Export fetches the current manifest for the given app id. The primary

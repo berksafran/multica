@@ -124,9 +124,19 @@ type UpdateSlackSettingsRequest struct {
 // /slack/verify. We return AppExists rather than baking it into the
 // status response so callers can decide when to pay the network cost
 // (one round-trip to Slack per verify call).
+//
+// RequestURLStale catches the most common silent failure mode: the
+// deployment's public host (typically an ngrok tunnel in dev) has
+// changed since the manifest was last published, so Slack is now
+// POSTing every event to a dead URL. Both AppExists and RequestURLStale
+// can be true simultaneously — the app is alive but pointed at the
+// wrong webhook.
 type SlackVerifyResponse struct {
-	AppExists bool   `json:"app_exists"`
-	Error     string `json:"error,omitempty"`
+	AppExists          bool   `json:"app_exists"`
+	Error              string `json:"error,omitempty"`
+	RequestURLStale    bool   `json:"request_url_stale,omitempty"`
+	ExpectedRequestURL string `json:"expected_request_url,omitempty"`
+	CurrentRequestURL  string `json:"current_request_url,omitempty"`
 }
 
 // SlackCredentialsResponse exposes the per-app OAuth client credentials.
@@ -696,9 +706,22 @@ func (h *Handler) VerifyAgentSlackApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "slack config token: "+err.Error())
 		return
 	}
-	_, err = mc.Export(r.Context(), app.SlackAppID)
+	exp, err := mc.Export(r.Context(), app.SlackAppID)
 	if err == nil {
-		writeJSON(w, http.StatusOK, SlackVerifyResponse{AppExists: true})
+		// App is alive on Slack's side — also check whether the event
+		// subscription URL Slack has on file still matches our current
+		// public origin. If it drifted (ngrok restart, domain change),
+		// Slack keeps delivering to the old URL and the user sees the
+		// app as "Installed" but no messages come through.
+		expectedURL := slackWebhookURL(uuidToString(app.AgentID))
+		currentURL := exp.Manifest.Settings.EventSubscriptions.RequestURL
+		stale := currentURL != "" && currentURL != expectedURL
+		writeJSON(w, http.StatusOK, SlackVerifyResponse{
+			AppExists:          true,
+			RequestURLStale:    stale,
+			ExpectedRequestURL: expectedURL,
+			CurrentRequestURL:  currentURL,
+		})
 		return
 	}
 	if slack.IsAppMissing(err) {

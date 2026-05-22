@@ -62,8 +62,18 @@ export interface UpdateAgentSlackCredentialsRequest {
 
 /** Verify endpoint result — probes Slack to confirm the app still
  * exists on their side. The UI uses app_exists=false to render an
- * orphan banner and offer one-click cleanup. */
+ * orphan banner and offer one-click cleanup.
+ *
+ * request_url_stale catches the silent-dead-integration case: the
+ * deployment's public host changed (ngrok restart, domain swap) and
+ * Slack is still POSTing events to the old URL. UI nudges the user
+ * to re-sync the manifest. Older backends omit the field; UI treats
+ * undefined as "not stale" so a stale banner never fires on partial
+ * data. */
 export interface AgentSlackVerifyResponse {
   app_exists: boolean;
   error?: string;
+  request_url_stale?: boolean;
+  expected_request_url?: string;
+  current_request_url?: string;
 }
