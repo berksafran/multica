@@ -182,6 +182,14 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 		return
 	}
 
+	// Optional: prepend last N messages before the mention so the LLM
+	// has surrounding context. Per-agent counts default to 0 (dormant).
+	// Fetch failures are non-fatal — we still process the mention, just
+	// without context.
+	if ctxBlock := h.fetchSlackRecentContext(ctx, app, ev); ctxBlock != "" {
+		text = ctxBlock + "\n\n" + text
+	}
+
 	msg, err := h.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ChatSessionID: session.ID,
 		Role:          "user",
@@ -421,6 +429,107 @@ func valueOrEmpty(t pgtype.Text) string {
 		return ""
 	}
 	return t.String
+}
+
+// fetchSlackRecentContext optionally pulls the last N messages before
+// the mention from Slack and renders them as a block we prepend to the
+// user turn. Two independent counts on slack_agent_app gate this:
+// recent_context_thread_count for in-thread mentions and
+// recent_context_channel_count for top-level channel mentions. DMs are
+// skipped because the session's own chat_message history already gives
+// the assistant continuity.
+//
+// Every failure path returns "" so the mention still gets dispatched;
+// missing context is a soft degradation, not a hard error.
+func (h *Handler) fetchSlackRecentContext(ctx context.Context, app db.SlackAgentApp, ev *slack.InnerEvent) string {
+	isThread := ev.ThreadTS != "" && ev.ThreadTS != ev.Timestamp
+	var limit int32
+	if isThread {
+		limit = app.RecentContextThreadCount
+	} else {
+		// app_mention without thread_ts and DMs both land here; we
+		// only want channel-history fetch for actual channel mentions.
+		if ev.ChannelType == "im" {
+			return ""
+		}
+		limit = app.RecentContextChannelCount
+	}
+	if limit <= 0 {
+		return ""
+	}
+
+	botToken, err := h.decryptSlackBotToken(app)
+	if err != nil || botToken == "" {
+		slog.Debug("slack: skip context fetch, bot token unavailable", "err", err)
+		return ""
+	}
+	client := slack.NewClient(botToken)
+
+	var messages []slack.HistoryMessage
+	if isThread {
+		resp, err := client.ConversationsReplies(ctx, ev.Channel, ev.ThreadTS, ev.Timestamp, int(limit))
+		if err != nil {
+			slog.Warn("slack: conversations.replies failed", "err", err, "channel", ev.Channel, "thread_ts", ev.ThreadTS)
+			return ""
+		}
+		messages = resp.Messages
+	} else {
+		resp, err := client.ConversationsHistory(ctx, ev.Channel, ev.Timestamp, int(limit))
+		if err != nil {
+			slog.Warn("slack: conversations.history failed", "err", err, "channel", ev.Channel)
+			return ""
+		}
+		// history returns newest-first; flip to chronological so the
+		// LLM reads the conversation forwards.
+		messages = reverseHistoryMessages(resp.Messages)
+	}
+
+	return formatSlackContextBlock(messages, isThread)
+}
+
+// reverseHistoryMessages returns a chronological (oldest-first) copy
+// so the formatted block reads in natural order regardless of which
+// Slack endpoint produced it.
+func reverseHistoryMessages(in []slack.HistoryMessage) []slack.HistoryMessage {
+	out := make([]slack.HistoryMessage, len(in))
+	for i, m := range in {
+		out[len(in)-1-i] = m
+	}
+	return out
+}
+
+// formatSlackContextBlock renders the messages as a labelled block
+// the LLM can clearly separate from the user's actual instruction.
+// Messages with no text (file-only uploads, system joins, etc.) are
+// skipped so we don't pad the prompt with empty `<@U…>:` lines.
+func formatSlackContextBlock(messages []slack.HistoryMessage, isThread bool) string {
+	var lines []string
+	for _, m := range messages {
+		if m.Subtype != "" && m.Subtype != "bot_message" && m.Subtype != "thread_broadcast" {
+			continue
+		}
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		author := m.User
+		if author == "" && m.BotID != "" {
+			author = "bot:" + m.BotID
+		}
+		if author == "" {
+			author = "unknown"
+		}
+		lines = append(lines, fmt.Sprintf("<@%s>: %s", author, text))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	label := "Recent channel context"
+	if isThread {
+		label = "Recent thread context"
+	}
+	return fmt.Sprintf("[%s — %d message(s) before this mention]\n%s",
+		label, len(lines), strings.Join(lines, "\n"))
 }
 
 func slackConfigured() bool {

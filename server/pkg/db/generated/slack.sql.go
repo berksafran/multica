@@ -19,7 +19,7 @@ INSERT INTO slack_agent_app (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc
+RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count
 `
 
 type CreateSlackAgentAppParams struct {
@@ -62,6 +62,8 @@ func (q *Queries) CreateSlackAgentApp(ctx context.Context, arg CreateSlackAgentA
 		&i.UpdatedAt,
 		&i.OauthClientIDEnc,
 		&i.OauthClientSecretEnc,
+		&i.RecentContextThreadCount,
+		&i.RecentContextChannelCount,
 	)
 	return i, err
 }
@@ -126,7 +128,7 @@ func (q *Queries) DeleteSlackAgentApp(ctx context.Context, arg DeleteSlackAgentA
 }
 
 const getSlackAgentAppByAgentID = `-- name: GetSlackAgentAppByAgentID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count FROM slack_agent_app
 WHERE agent_id = $1
 `
 
@@ -149,12 +151,14 @@ func (q *Queries) GetSlackAgentAppByAgentID(ctx context.Context, agentID pgtype.
 		&i.UpdatedAt,
 		&i.OauthClientIDEnc,
 		&i.OauthClientSecretEnc,
+		&i.RecentContextThreadCount,
+		&i.RecentContextChannelCount,
 	)
 	return i, err
 }
 
 const getSlackAgentAppByAppID = `-- name: GetSlackAgentAppByAppID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count FROM slack_agent_app
 WHERE slack_app_id = $1
 `
 
@@ -177,12 +181,14 @@ func (q *Queries) GetSlackAgentAppByAppID(ctx context.Context, slackAppID string
 		&i.UpdatedAt,
 		&i.OauthClientIDEnc,
 		&i.OauthClientSecretEnc,
+		&i.RecentContextThreadCount,
+		&i.RecentContextChannelCount,
 	)
 	return i, err
 }
 
 const getSlackAgentAppByID = `-- name: GetSlackAgentAppByID :one
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count FROM slack_agent_app
 WHERE id = $1
 `
 
@@ -205,6 +211,8 @@ func (q *Queries) GetSlackAgentAppByID(ctx context.Context, id pgtype.UUID) (Sla
 		&i.UpdatedAt,
 		&i.OauthClientIDEnc,
 		&i.OauthClientSecretEnc,
+		&i.RecentContextThreadCount,
+		&i.RecentContextChannelCount,
 	)
 	return i, err
 }
@@ -294,7 +302,7 @@ func (q *Queries) GetSlackConfigToken(ctx context.Context) (SlackConfigToken, er
 }
 
 const listSlackAgentAppsByWorkspace = `-- name: ListSlackAgentAppsByWorkspace :many
-SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc FROM slack_agent_app
+SELECT id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count FROM slack_agent_app
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -324,6 +332,8 @@ func (q *Queries) ListSlackAgentAppsByWorkspace(ctx context.Context, workspaceID
 			&i.UpdatedAt,
 			&i.OauthClientIDEnc,
 			&i.OauthClientSecretEnc,
+			&i.RecentContextThreadCount,
+			&i.RecentContextChannelCount,
 		); err != nil {
 			return nil, err
 		}
@@ -405,7 +415,7 @@ SET slack_team_id = $2,
     status        = 'installed',
     updated_at    = now()
 WHERE id = $1
-RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc
+RETURNING id, agent_id, workspace_id, slack_app_id, slack_team_id, bot_user_id, bot_token_enc, signing_secret, manifest_version, status, connected_by_id, created_at, updated_at, oauth_client_id_enc, oauth_client_secret_enc, recent_context_thread_count, recent_context_channel_count
 `
 
 type UpdateSlackAgentAppInstallParams struct {
@@ -441,6 +451,8 @@ func (q *Queries) UpdateSlackAgentAppInstall(ctx context.Context, arg UpdateSlac
 		&i.UpdatedAt,
 		&i.OauthClientIDEnc,
 		&i.OauthClientSecretEnc,
+		&i.RecentContextThreadCount,
+		&i.RecentContextChannelCount,
 	)
 	return i, err
 }

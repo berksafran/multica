@@ -129,6 +129,87 @@ func (c *Client) ConversationsInfo(ctx context.Context, channelID string) (*Conv
 	return &out, nil
 }
 
+// HistoryMessage is the trimmed message shape we keep from
+// conversations.history / conversations.replies. We deliberately drop
+// blocks, attachments, files, reactions — they balloon the LLM prompt
+// with structure the model can't act on through Slack.
+type HistoryMessage struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype,omitempty"`
+	User    string `json:"user,omitempty"`
+	BotID   string `json:"bot_id,omitempty"`
+	Text    string `json:"text,omitempty"`
+	TS      string `json:"ts"`
+}
+
+// ConversationsHistoryResponse is the trimmed conversations.history response.
+type ConversationsHistoryResponse struct {
+	OK       bool             `json:"ok"`
+	Error    string           `json:"error,omitempty"`
+	Messages []HistoryMessage `json:"messages"`
+}
+
+// ConversationsHistory fetches up to `limit` messages from a channel
+// (or DM/group) older than `latest`. Used to inject channel context
+// before a top-level @bot mention. Requires channels:history /
+// groups:history / im:history depending on the conversation type.
+//
+// `latest` is the mention's own TS; `inclusive=false` excludes the
+// mention itself from the returned slice so the LLM only sees what
+// came before.
+func (c *Client) ConversationsHistory(ctx context.Context, channelID, latest string, limit int) (*ConversationsHistoryResponse, error) {
+	v := url.Values{}
+	v.Set("channel", channelID)
+	if latest != "" {
+		v.Set("latest", latest)
+		v.Set("inclusive", "false")
+	}
+	if limit > 0 {
+		v.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	var out ConversationsHistoryResponse
+	if err := c.doForm(ctx, "conversations.history", v, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return &out, fmt.Errorf("slack: %s", out.Error)
+	}
+	return &out, nil
+}
+
+// ConversationsRepliesResponse mirrors conversations.replies.
+type ConversationsRepliesResponse struct {
+	OK       bool             `json:"ok"`
+	Error    string           `json:"error,omitempty"`
+	Messages []HistoryMessage `json:"messages"`
+}
+
+// ConversationsReplies fetches up to `limit` messages in the thread
+// rooted at `threadTS`, ending before `latest` (the mention's TS).
+// Used to inject thread context for a thread-level @bot mention.
+// `threadTS` is the parent message's TS; Slack treats it as the
+// thread anchor and returns the parent plus replies.
+func (c *Client) ConversationsReplies(ctx context.Context, channelID, threadTS, latest string, limit int) (*ConversationsRepliesResponse, error) {
+	v := url.Values{}
+	v.Set("channel", channelID)
+	v.Set("ts", threadTS)
+	if latest != "" {
+		v.Set("latest", latest)
+		v.Set("inclusive", "false")
+	}
+	if limit > 0 {
+		v.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	var out ConversationsRepliesResponse
+	if err := c.doForm(ctx, "conversations.replies", v, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return &out, fmt.Errorf("slack: %s", out.Error)
+	}
+	return &out, nil
+}
+
 // GetPermalinkResponse is the trimmed chat.getPermalink response.
 type GetPermalinkResponse struct {
 	OK        bool   `json:"ok"`
