@@ -101,6 +101,61 @@ func (c *Client) UsersInfo(ctx context.Context, userID string) (*UserInfoRespons
 	return &out, nil
 }
 
+// ConversationsInfoResponse is the trimmed conversations.info response.
+type ConversationsInfoResponse struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+	Channel struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		IsIM   bool   `json:"is_im"`
+		IsMPIM bool   `json:"is_mpim"`
+	} `json:"channel"`
+}
+
+// ConversationsInfo fetches channel metadata. Requires one of channels:read /
+// groups:read / mpim:read / im:read depending on the conversation type;
+// callers should treat failure as "name unavailable", not a hard error.
+func (c *Client) ConversationsInfo(ctx context.Context, channelID string) (*ConversationsInfoResponse, error) {
+	v := url.Values{}
+	v.Set("channel", channelID)
+	var out ConversationsInfoResponse
+	if err := c.doForm(ctx, "conversations.info", v, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return &out, fmt.Errorf("slack: %s", out.Error)
+	}
+	return &out, nil
+}
+
+// GetPermalinkResponse is the trimmed chat.getPermalink response.
+type GetPermalinkResponse struct {
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	Channel   string `json:"channel,omitempty"`
+	Permalink string `json:"permalink"`
+}
+
+// GetPermalink resolves a Slack message timestamp to its web URL. Used at
+// chat-session link creation time so the Multica UI can deep-link back into
+// the thread that started the session. Slack returns the canonical
+// https://<team>.slack.com/archives/<channel>/p<ts> form which we cache so
+// later page loads don't pay another round-trip.
+func (c *Client) GetPermalink(ctx context.Context, channelID, messageTS string) (*GetPermalinkResponse, error) {
+	v := url.Values{}
+	v.Set("channel", channelID)
+	v.Set("message_ts", messageTS)
+	var out GetPermalinkResponse
+	if err := c.doForm(ctx, "chat.getPermalink", v, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return &out, fmt.Errorf("slack: %s", out.Error)
+	}
+	return &out, nil
+}
+
 // AuthTestResponse is the trimmed auth.test response — used after OAuth
 // exchange to confirm the token is live and learn the bot user id.
 type AuthTestResponse struct {

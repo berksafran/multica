@@ -36,6 +36,14 @@ func (m *ManifestClient) WithBaseURL(u string) *ManifestClient {
 	return m
 }
 
+// SetAccessToken swaps the bearer token used for subsequent apps.manifest.*
+// calls. Long-lived clients (e.g. configTokenService's reused instance) need
+// this when an admin pastes new credentials at runtime — re-newing the whole
+// ManifestClient would lose the WithBaseURL override used in tests.
+func (m *ManifestClient) SetAccessToken(token string) {
+	m.accessToken = token
+}
+
 // ManifestCreateResponse is the subset of apps.manifest.create we keep.
 // CredentialsResponse fields (client_id, client_secret, signing_secret,
 // verification_token) are what we persist on slack_agent_app — bot_token
@@ -140,6 +148,44 @@ func IsAppMissing(err error) bool {
 	}
 	msg := err.Error()
 	for _, s := range []string{"invalid_app_id", "app_not_found", "app_deleted", "not_found", "missing_app"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTokenExpired returns true when a Slack error indicates the access token
+// has aged out and must be rotated. The configTokenService uses this to
+// distinguish "rotate and retry" from "real error, surface to caller".
+//
+// Slack's wire code for config tokens is consistently `token_expired`; the
+// substring check also picks up the variants other endpoints return
+// (`invalid_auth`, `not_authed`) in case Slack changes the wording on the
+// manifest endpoints without notice.
+func IsTokenExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{"token_expired", "invalid_auth", "not_authed"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInvalidRefreshToken returns true when apps.manifest.rotate cannot use
+// the supplied refresh token. This is terminal — only a fresh paste from
+// the admin recovers, so the service should stop retrying and surface a
+// `last_rotate_error` for the UI.
+func IsInvalidRefreshToken(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{"invalid_refresh_token", "expired_refresh_token", "token_revoked"} {
 		if strings.Contains(msg, s) {
 			return true
 		}

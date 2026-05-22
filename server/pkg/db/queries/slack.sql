@@ -86,3 +86,51 @@ WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3;
 -- name: GetSlackChatSessionLinkBySessionID :one
 SELECT * FROM slack_chat_session_link
 WHERE chat_session_id = $1;
+
+-- name: ListSlackChatSessionLinksBySessionIDs :many
+SELECT * FROM slack_chat_session_link
+WHERE chat_session_id = ANY($1::uuid[]);
+
+-- name: UpdateSlackChatSessionLinkPermalink :exec
+UPDATE slack_chat_session_link
+SET permalink = $2
+WHERE chat_session_id = $1;
+
+-- =====================
+-- Slack Config Token (singleton)
+-- =====================
+
+-- name: GetSlackConfigToken :one
+-- Returns the singleton config-token row, or pgx.ErrNoRows when the deployment
+-- has not been bootstrapped yet. Callers (configTokenService.Current) treat
+-- ErrNoRows as "fall back to env var".
+SELECT id, access_token_enc, refresh_token_enc, expires_at, last_rotated_at,
+       last_rotate_error, created_at, updated_at
+FROM slack_config_token
+WHERE id = 1;
+
+-- name: UpsertSlackConfigToken :one
+-- Idempotent write used by both bootstrap and rotate. The CHECK on id keeps
+-- this row a singleton; ON CONFLICT keeps the upsert atomic so a concurrent
+-- bootstrap + rotate cannot insert a second row.
+INSERT INTO slack_config_token (id, access_token_enc, refresh_token_enc, expires_at,
+                                last_rotated_at, last_rotate_error, updated_at)
+VALUES (1, $1, $2, $3, now(), NULL, now())
+ON CONFLICT (id) DO UPDATE
+SET access_token_enc  = EXCLUDED.access_token_enc,
+    refresh_token_enc = EXCLUDED.refresh_token_enc,
+    expires_at        = EXCLUDED.expires_at,
+    last_rotated_at   = now(),
+    last_rotate_error = NULL,
+    updated_at        = now()
+RETURNING id, access_token_enc, refresh_token_enc, expires_at, last_rotated_at,
+          last_rotate_error, created_at, updated_at;
+
+-- name: SetSlackConfigTokenRotateError :exec
+-- Records the latest rotation failure without touching the token columns —
+-- the previous (still-valid-until-expiry) token must stay usable until the
+-- admin re-pastes credentials.
+UPDATE slack_config_token
+SET last_rotate_error = $1,
+    updated_at        = now()
+WHERE id = 1;

@@ -2,10 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ExternalLink, KeyRound, Loader2, MessageSquare, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ExternalLink,
+  HelpCircle,
+  KeyRound,
+  Loader2,
+  MessageSquare,
+  Pencil,
+  RefreshCw,
+} from "lucide-react";
 import type { Agent } from "@multica/core/types";
 import { api } from "@multica/core/api";
 import { Button } from "@multica/ui/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { useT } from "../../../i18n";
 
 const slackStatusQueryKey = (wsId: string, agentId: string) => ["agent-slack", wsId, agentId] as const;
@@ -64,10 +75,27 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
     onError: (e) => setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_provision)),
   });
 
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
+
+  // Auto-clear the "Name synced" confirmation so it doesn't linger past
+  // its useful window — otherwise the message implies a fresh sync on a
+  // stale view long after the action completed.
+  useEffect(() => {
+    if (syncedAt === null) return;
+    const handle = window.setTimeout(() => setSyncedAt(null), 4000);
+    return () => window.clearTimeout(handle);
+  }, [syncedAt]);
+
   const syncMutation = useMutation({
     mutationFn: () => api.syncAgentSlackApp(workspaceId, agent.id),
-    onSuccess: () => setError(null),
-    onError: (e) => setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_sync)),
+    onSuccess: () => {
+      setError(null);
+      setSyncedAt(Date.now());
+    },
+    onError: (e) => {
+      setSyncedAt(null);
+      setError(e instanceof Error ? e.message : t(($) => $.slack_tab.error_sync));
+    },
   });
 
   const disconnectMutation = useMutation({
@@ -228,46 +256,97 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
 
       {status.installed && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1 rounded-md border bg-background px-3 py-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">{t(($) => $.slack_tab.status_label)}</span>
-              <span className="font-medium text-foreground">
-                {t(($) => $.slack_tab.status_installed)}
-              </span>
+          <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
+          <div className="overflow-hidden rounded-lg border bg-background">
+            <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2" aria-hidden>
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                <span className="text-xs font-medium">
+                  {t(($) => $.slack_tab.status_installed)}
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => verifyMutation.mutate()}
+                disabled={verifying}
+              >
+                <RefreshCw className={`mr-1.5 h-3 w-3 ${verifying ? "animate-spin" : ""}`} />
+                {verifying
+                  ? t(($) => $.slack_tab.verifying)
+                  : t(($) => $.slack_tab.verify_button)}
+              </Button>
             </div>
-            {status.team_id && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">{t(($) => $.slack_tab.team_label)}</span>
-                <span className="font-mono">{status.team_id}</span>
-              </div>
-            )}
-            {status.bot_user_id && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">{t(($) => $.slack_tab.bot_user_label)}</span>
-                <span className="font-mono">{status.bot_user_id}</span>
-              </div>
-            )}
-            {status.app_id && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">{t(($) => $.slack_tab.app_id_label)}</span>
-                <span className="font-mono">{status.app_id}</span>
-              </div>
-            )}
+            <dl className="divide-y text-xs">
+              {status.team_id && (
+                <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
+                  <dt className="text-muted-foreground">{t(($) => $.slack_tab.team_label)}</dt>
+                  <dd className="truncate font-mono text-foreground">{status.team_id}</dd>
+                </div>
+              )}
+              {status.bot_user_id && (
+                <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
+                  <dt className="text-muted-foreground">{t(($) => $.slack_tab.bot_user_label)}</dt>
+                  <dd className="truncate font-mono text-foreground">{status.bot_user_id}</dd>
+                </div>
+              )}
+              {status.app_id && (
+                <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
+                  <dt className="text-muted-foreground">{t(($) => $.slack_tab.app_id_label)}</dt>
+                  <dd className="truncate font-mono text-foreground">{status.app_id}</dd>
+                </div>
+              )}
+            </dl>
           </div>
-          <div className="flex flex-wrap gap-2">
+            <CredentialsSection
+              workspaceId={workspaceId}
+              agentId={agent.id}
+              onError={setError}
+              onSaved={() => {
+                qc.invalidateQueries({ queryKey: slackStatusQueryKey(workspaceId, agent.id) });
+              }}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
+              size="sm"
               onClick={() => syncMutation.mutate()}
               disabled={syncing}
             >
-              {syncing
-                ? t(($) => $.slack_tab.syncing)
-                : t(($) => $.slack_tab.sync_button)}
+              {syncing ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  {t(($) => $.slack_tab.syncing)}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                  {t(($) => $.slack_tab.sync_button)}
+                </>
+              )}
             </Button>
+            {syncedAt !== null && (
+              <span
+                className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+                role="status"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {t(($) => $.slack_tab.sync_success)}
+              </span>
+            )}
             <Button
               type="button"
-              variant="destructive"
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => disconnectMutation.mutate()}
               disabled={disconnecting}
             >
@@ -276,13 +355,19 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
                 : t(($) => $.slack_tab.disconnect_button)}
             </Button>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            {t(($) => $.slack_tab.sync_avatar_hint)}
+          </p>
         </div>
       )}
 
       {/* Credentials editor: visible whenever a row exists in DB, even
           after a successful install — Slack-side credentials may rotate
-          and the user needs a path to re-paste them without disconnect. */}
-      {status.provisioned && (
+          and the user needs a path to re-paste them without disconnect.
+          When installed it renders side-by-side with the status card
+          above; pre-install it stacks as its own row below. */}
+      {status.provisioned && !status.installed && (
         <CredentialsSection
           workspaceId={workspaceId}
           agentId={agent.id}
@@ -293,10 +378,11 @@ export function SlackTab({ agent, workspaceId }: { agent: Agent; workspaceId: st
         />
       )}
 
-      {/* Verify footer — always available when the row exists so users
-          can manually re-check after a Slack-side change without
+      {/* Verify control lives in the installed-state status header
+          (and inline next to the not-installed actions when needed) so
+          users can manually re-check after a Slack-side change without
           waiting for the focus-driven refresh. */}
-      {status.provisioned && (
+      {status.provisioned && !status.installed && (
         <div className="flex items-center justify-end">
           <Button
             type="button"
@@ -372,7 +458,7 @@ function CredentialsSection({
 
   if (credentialsQuery.isLoading) {
     return (
-      <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t(($) => $.slack_tab.loading)}
       </div>
     );
@@ -383,46 +469,75 @@ function CredentialsSection({
   const saving = updateMutation.isPending;
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border bg-background px-3 py-3">
-      <header className="flex items-start gap-2">
-        <KeyRound className="mt-0.5 h-4 w-4 text-muted-foreground" />
-        <div className="flex flex-col gap-0.5">
-          <h3 className="text-xs font-semibold">{t(($) => $.slack_tab.credentials_title)}</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {t(($) => $.slack_tab.credentials_description)}
-          </p>
+    <section className="overflow-hidden rounded-lg border bg-background">
+      <header className="flex items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <h3 className="text-xs font-medium">
+            {t(($) => $.slack_tab.credentials_title)}
+          </h3>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={t(($) => $.slack_tab.credentials_description)}
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                </button>
+              }
+            />
+            <TooltipContent className="max-w-xs whitespace-normal px-3 py-2 text-left leading-snug">
+              {t(($) => $.slack_tab.credentials_description)}
+            </TooltipContent>
+          </Tooltip>
         </div>
+        {!editing && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setEditing(true)}
+          >
+            <Pencil className="mr-1.5 h-3 w-3" />
+            {t(($) => $.slack_tab.credentials_edit)}
+          </Button>
+        )}
       </header>
 
       {!editing && (
-        <div className="flex flex-col gap-1 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">
+        <dl className="divide-y text-xs">
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
+            <dt className="text-muted-foreground">
               {t(($) => $.slack_tab.credentials_client_id_label)}
-            </span>
-            <span className="font-mono">{data.client_id || "—"}</span>
+            </dt>
+            <dd className="truncate font-mono text-foreground">{data.client_id || "—"}</dd>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-3 py-2">
+            <dt className="text-muted-foreground">
               {t(($) => $.slack_tab.credentials_client_secret_label)}
-            </span>
-            <span className={data.has_client_secret ? "text-foreground" : "text-muted-foreground"}>
-              {data.has_client_secret
-                ? t(($) => $.slack_tab.credentials_secret_saved)
-                : t(($) => $.slack_tab.credentials_secret_not_saved)}
-            </span>
+            </dt>
+            <dd>
+              {data.has_client_secret ? (
+                <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                  <Check className="h-3 w-3" />
+                  {t(($) => $.slack_tab.credentials_secret_saved)}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  {t(($) => $.slack_tab.credentials_secret_not_saved)}
+                </span>
+              )}
+            </dd>
           </div>
-          <div className="mt-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
-              {t(($) => $.slack_tab.credentials_edit)}
-            </Button>
-          </div>
-        </div>
+        </dl>
       )}
 
       {editing && (
         <form
-          className="flex flex-col gap-3"
+          className="flex flex-col gap-3 px-3 py-3"
           onSubmit={(e) => {
             e.preventDefault();
             updateMutation.mutate();

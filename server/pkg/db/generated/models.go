@@ -495,6 +495,18 @@ type SlackChatSessionLink struct {
 	SlackThreadTs  string             `json:"slack_thread_ts"`
 	SlackUserID    string             `json:"slack_user_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	Permalink      pgtype.Text        `json:"permalink"`
+}
+
+type SlackConfigToken struct {
+	ID              int16              `json:"id"`
+	AccessTokenEnc  string             `json:"access_token_enc"`
+	RefreshTokenEnc string             `json:"refresh_token_enc"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	LastRotatedAt   pgtype.Timestamptz `json:"last_rotated_at"`
+	LastRotateError pgtype.Text        `json:"last_rotate_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Squad struct {

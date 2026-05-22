@@ -426,7 +426,20 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--strict-mcp-config",
+		// TEMP DISABLED: with --strict-mcp-config, the daemon-spawned Claude
+		// Code ignores the operator's ~/.claude.json and project-level
+		// .mcp.json — so MCPs the operator has set up locally (Linear,
+		// Notion, etc.) are invisible to agents. We're trialing the
+		// permissive default so agents inherit those servers for now.
+		//
+		// Re-enable BEFORE shipping multi-tenant / containerized deploys:
+		// without strict mode, an agent's tool surface depends on whatever
+		// the host's ~/.claude.json contains. That's fine for a single-host
+		// Properti self-host, but in a shared/container setup it leaks the
+		// operator's personal MCP credentials into every workspace's agent.
+		// Long-term plan: per-agent mcp_config in DB is the right home for
+		// these servers (Linear MCP belongs to Sarah, not to the host).
+		// "--strict-mcp-config",
 		"--permission-mode", "bypassPermissions",
 		// AskUserQuestion is Claude Code's built-in interactive question tool.
 		// The daemon runs Claude in non-interactive stream-json mode and has

@@ -108,7 +108,22 @@ type RouterOptions struct {
 	HeartbeatScheduler handler.HeartbeatScheduler
 }
 
+// NewRouterAndHandlerWithOptions returns both the wired chi.Router and the
+// underlying *handler.Handler. Background workers in main.go need the
+// handler instance (for shared singletons like the Slack config-token
+// service); existing callers that only need the router go through the
+// thin wrapper below to stay binary-compatible with tests.
+func NewRouterAndHandlerWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
+	r, h := newRouterAndHandlerInternal(pool, hub, bus, analyticsClient, rdb, opts)
+	return r, h
+}
+
 func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) chi.Router {
+	r, _ := newRouterAndHandlerInternal(pool, hub, bus, analyticsClient, rdb, opts)
+	return r
+}
+
+func newRouterAndHandlerInternal(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
 	queries := db.New(pool)
 	emailSvc := service.NewEmailService()
 	daemonHub := opts.DaemonHub
@@ -382,6 +397,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/agents/{agentId}/slack/verify", h.VerifyAgentSlackApp)
 					r.Put("/agents/{agentId}/slack/credentials", h.UpdateAgentSlackCredentials)
 					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
+					// Workspace-scoped URL keeps reuse of the role gate; the
+					// row itself is a process-wide singleton.
+					r.Get("/slack/config-token", h.GetSlackConfigTokenStatus)
+					r.Post("/slack/config-token/bootstrap", h.BootstrapSlackConfigToken)
+					r.Post("/slack/config-token/rotate", h.RotateSlackConfigToken)
 				})
 			})
 		})
@@ -667,7 +687,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	})
 
-	return r
+	return r, h
 }
 
 // membershipChecker implements realtime.MembershipChecker using database queries.

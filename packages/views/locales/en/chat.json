@@ -92,6 +92,11 @@
     "aria_start": "Share current page with Multica"
   },
   "no_agent_banner": "You need an agent to start chatting.",
+  "slack_thread_banner": {
+    "message": "This conversation is connected to a Slack thread — reply from Slack.",
+    "open_link": "Open thread",
+    "open_link_aria": "Open this thread in Slack"
+  },
   "offline_banner": {
     "fallback_name": "the agent",
     "unstable": "{{name}}'s connection is unstable — replies may be delayed.",

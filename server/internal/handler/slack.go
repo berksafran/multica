@@ -83,11 +83,11 @@ func (h *Handler) HandleSlackWebhook(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		// Debug visibility: every Slack-delivered event is logged so
-		// LOG_LEVEL=debug surfaces the raw stream for troubleshooting.
-		// Kept off Info/Warn because non-mention channels can deliver
-		// many of these per minute.
-		slog.Debug("slack: event received",
+		// TEMP: bumped to Warn so the active LOG_LEVEL=warn surfaces the
+		// raw event stream while we debug missing inbound triggers. Revert
+		// to Debug before merge — non-mention channels can deliver many
+		// of these per minute.
+		slog.Warn("slack: event received",
 			"agent_id", uuidToString(app.AgentID),
 			"type", ev.Type,
 			"channel", ev.Channel,
@@ -130,7 +130,7 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 		// accept (Slack only fires this on explicit @bot mention)
 	case "message":
 		if ev.ChannelType != "im" {
-			slog.Debug("slack: drop (non-DM message without mention)",
+			slog.Warn("slack: drop (non-DM message without mention)",
 				"channel", ev.Channel,
 				"channel_type", ev.ChannelType,
 				"thread_ts", ev.ThreadTS,
@@ -139,23 +139,23 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 		}
 		// DM — accept
 	default:
-		slog.Debug("slack: drop (event type outside whitelist)", "type", ev.Type)
+		slog.Warn("slack: drop (event type outside whitelist)", "type", ev.Type)
 		return
 	}
 
 	// Cost guard 2: ignore the bot's own messages (echo loop).
 	if ev.BotID != "" {
-		slog.Debug("slack: drop (event has bot_id, echo prevention)", "bot_id", ev.BotID)
+		slog.Warn("slack: drop (event has bot_id, echo prevention)", "bot_id", ev.BotID)
 		return
 	}
 	if app.BotUserID.Valid && ev.User == app.BotUserID.String {
-		slog.Debug("slack: drop (event from own bot_user)", "user", ev.User)
+		slog.Warn("slack: drop (event from own bot_user)", "user", ev.User)
 		return
 	}
 
 	// Cost guard 3: drop edits/deletes/system subtypes.
 	if ev.Subtype != "" {
-		slog.Debug("slack: drop (subtype set)", "subtype", ev.Subtype)
+		slog.Warn("slack: drop (subtype set)", "subtype", ev.Subtype)
 		return
 	}
 
@@ -253,7 +253,7 @@ func (h *Handler) resolveSlackSession(ctx context.Context, app db.SlackAgentApp,
 		return nil, nil
 	}
 
-	title := fmt.Sprintf("Slack: %s", channelID)
+	title := h.buildSlackSessionTitle(ctx, app, channelID, slackUserID)
 	session, err := h.Queries.CreateChatSession(ctx, db.CreateChatSessionParams{
 		WorkspaceID: app.WorkspaceID,
 		AgentID:     app.AgentID,
@@ -276,8 +276,85 @@ func (h *Handler) resolveSlackSession(ctx context.Context, app db.SlackAgentApp,
 		// log loudly. Don't roll back: the user message will still
 		// reach the agent for this turn.
 		slog.Warn("slack: create session link failed", "err", err, "session_id", uuidToString(session.ID))
+	} else {
+		// Best-effort: cache the thread permalink so the UI's "Reply in
+		// Slack" banner has a clickable link without paying chat.getPermalink
+		// on every session load. Failure is non-fatal — the column stays
+		// null and the UI falls back to plain text.
+		h.persistSlackThreadPermalink(ctx, app, session.ID, channelID, threadTS)
 	}
 	return &session, nil
+}
+
+// persistSlackThreadPermalink resolves the thread's web URL via chat.getPermalink
+// and stores it on the session's link row. Non-fatal: any failure (missing token,
+// API error, missing scope) leaves the permalink null and is logged at debug.
+func (h *Handler) persistSlackThreadPermalink(ctx context.Context, app db.SlackAgentApp, sessionID pgtype.UUID, channelID, threadTS string) {
+	botToken, err := h.decryptSlackBotToken(app)
+	if err != nil || botToken == "" {
+		return
+	}
+	client := slack.NewClient(botToken)
+	resp, err := client.GetPermalink(ctx, channelID, threadTS)
+	if err != nil || resp == nil || resp.Permalink == "" {
+		slog.Debug("slack: get permalink failed", "err", err, "session_id", uuidToString(sessionID))
+		return
+	}
+	if err := h.Queries.UpdateSlackChatSessionLinkPermalink(ctx, db.UpdateSlackChatSessionLinkPermalinkParams{
+		ChatSessionID: sessionID,
+		Permalink:     pgtype.Text{String: resp.Permalink, Valid: true},
+	}); err != nil {
+		slog.Debug("slack: persist permalink failed", "err", err, "session_id", uuidToString(sessionID))
+	}
+}
+
+// buildSlackSessionTitle produces the human-readable label shown in the
+// session picker. We try Slack's conversations.info + users.info so the
+// dropdown reads "#channel · Alice" instead of an opaque "C04CD6QRMQE";
+// on any API failure (missing scope, network error, deleted user) we
+// fall back to whatever piece we still have, then to the raw IDs. The
+// title is purely cosmetic, so failure must never block session creation.
+func (h *Handler) buildSlackSessionTitle(ctx context.Context, app db.SlackAgentApp, channelID, slackUserID string) string {
+	botToken, err := h.decryptSlackBotToken(app)
+	if err != nil || botToken == "" {
+		return fmt.Sprintf("Slack: %s", channelID)
+	}
+	client := slack.NewClient(botToken)
+
+	channelLabel := channelID
+	isDM := false
+	if info, err := client.ConversationsInfo(ctx, channelID); err == nil {
+		if info.Channel.IsIM {
+			isDM = true
+		} else if info.Channel.Name != "" {
+			channelLabel = "#" + info.Channel.Name
+		}
+	}
+
+	userLabel := ""
+	if slackUserID != "" {
+		if info, err := client.UsersInfo(ctx, slackUserID); err == nil {
+			switch {
+			case info.User.Profile.DisplayName != "":
+				userLabel = info.User.Profile.DisplayName
+			case info.User.Profile.RealName != "":
+				userLabel = info.User.Profile.RealName
+			case info.User.Name != "":
+				userLabel = info.User.Name
+			}
+		}
+	}
+
+	switch {
+	case isDM && userLabel != "":
+		return fmt.Sprintf("Slack DM · %s", userLabel)
+	case isDM:
+		return "Slack DM"
+	case userLabel != "":
+		return fmt.Sprintf("%s · %s", channelLabel, userLabel)
+	default:
+		return channelLabel
+	}
 }
 
 // resolveSlackCreator finds a Multica user to attribute the Slack message

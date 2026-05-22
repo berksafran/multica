@@ -1,3 +1,18 @@
+/**
+ * Slack origin metadata for a chat session. Presence of this object is the
+ * UI's signal that the session is "Slack-owned" — input is locked, replies
+ * must happen in the Slack thread.
+ *
+ * `permalink` is best-effort from chat.getPermalink at link creation; may be
+ * empty if the Slack API call failed. UI falls back to plain copy.
+ */
+export interface SlackThreadInfo {
+  team_id: string;
+  channel_id: string;
+  thread_ts: string;
+  permalink?: string;
+}
+
 export interface ChatSession {
   id: string;
   workspace_id: string;
@@ -9,6 +24,12 @@ export interface ChatSession {
   has_unread: boolean;
   created_at: string;
   updated_at: string;
+  /**
+   * Set when the session was opened from a Slack thread. The UI uses this
+   * to lock the input, hide attachment upload, hide the rename affordance,
+   * and render a "Reply in Slack" banner with a permalink.
+   */
+  slack_thread?: SlackThreadInfo;
 }
 
 export interface PendingChatTaskItem {

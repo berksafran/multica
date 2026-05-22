@@ -73,7 +73,7 @@ INSERT INTO slack_chat_session_link (
 ) VALUES (
     $1, $2, $3, $4, $5
 )
-RETURNING chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at
+RETURNING chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink
 `
 
 type CreateSlackChatSessionLinkParams struct {
@@ -103,6 +103,7 @@ func (q *Queries) CreateSlackChatSessionLink(ctx context.Context, arg CreateSlac
 		&i.SlackThreadTs,
 		&i.SlackUserID,
 		&i.CreatedAt,
+		&i.Permalink,
 	)
 	return i, err
 }
@@ -206,7 +207,7 @@ func (q *Queries) GetSlackAgentAppByID(ctx context.Context, id pgtype.UUID) (Sla
 }
 
 const getSlackChatSessionLinkBySessionID = `-- name: GetSlackChatSessionLinkBySessionID :one
-SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at FROM slack_chat_session_link
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
 WHERE chat_session_id = $1
 `
 
@@ -220,12 +221,13 @@ func (q *Queries) GetSlackChatSessionLinkBySessionID(ctx context.Context, chatSe
 		&i.SlackThreadTs,
 		&i.SlackUserID,
 		&i.CreatedAt,
+		&i.Permalink,
 	)
 	return i, err
 }
 
 const getSlackChatSessionLinkByThread = `-- name: GetSlackChatSessionLinkByThread :one
-SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at FROM slack_chat_session_link
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
 WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3
 `
 
@@ -245,6 +247,37 @@ func (q *Queries) GetSlackChatSessionLinkByThread(ctx context.Context, arg GetSl
 		&i.SlackThreadTs,
 		&i.SlackUserID,
 		&i.CreatedAt,
+		&i.Permalink,
+	)
+	return i, err
+}
+
+const getSlackConfigToken = `-- name: GetSlackConfigToken :one
+
+SELECT id, access_token_enc, refresh_token_enc, expires_at, last_rotated_at,
+       last_rotate_error, created_at, updated_at
+FROM slack_config_token
+WHERE id = 1
+`
+
+// =====================
+// Slack Config Token (singleton)
+// =====================
+// Returns the singleton config-token row, or pgx.ErrNoRows when the deployment
+// has not been bootstrapped yet. Callers (configTokenService.Current) treat
+// ErrNoRows as "fall back to env var".
+func (q *Queries) GetSlackConfigToken(ctx context.Context) (SlackConfigToken, error) {
+	row := q.db.QueryRow(ctx, getSlackConfigToken)
+	var i SlackConfigToken
+	err := row.Scan(
+		&i.ID,
+		&i.AccessTokenEnc,
+		&i.RefreshTokenEnc,
+		&i.ExpiresAt,
+		&i.LastRotatedAt,
+		&i.LastRotateError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -291,6 +324,39 @@ func (q *Queries) ListSlackAgentAppsByWorkspace(ctx context.Context, workspaceID
 	return items, nil
 }
 
+const listSlackChatSessionLinksBySessionIDs = `-- name: ListSlackChatSessionLinksBySessionIDs :many
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
+WHERE chat_session_id = ANY($1::uuid[])
+`
+
+func (q *Queries) ListSlackChatSessionLinksBySessionIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]SlackChatSessionLink, error) {
+	rows, err := q.db.Query(ctx, listSlackChatSessionLinksBySessionIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SlackChatSessionLink{}
+	for rows.Next() {
+		var i SlackChatSessionLink
+		if err := rows.Scan(
+			&i.ChatSessionID,
+			&i.SlackTeamID,
+			&i.SlackChannelID,
+			&i.SlackThreadTs,
+			&i.SlackUserID,
+			&i.CreatedAt,
+			&i.Permalink,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSlackAgentAppUninstalled = `-- name: MarkSlackAgentAppUninstalled :exec
 UPDATE slack_agent_app
 SET status        = 'uninstalled',
@@ -301,6 +367,21 @@ WHERE id = $1
 
 func (q *Queries) MarkSlackAgentAppUninstalled(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markSlackAgentAppUninstalled, id)
+	return err
+}
+
+const setSlackConfigTokenRotateError = `-- name: SetSlackConfigTokenRotateError :exec
+UPDATE slack_config_token
+SET last_rotate_error = $1,
+    updated_at        = now()
+WHERE id = 1
+`
+
+// Records the latest rotation failure without touching the token columns —
+// the previous (still-valid-until-expiry) token must stay usable until the
+// admin re-pastes credentials.
+func (q *Queries) SetSlackConfigTokenRotateError(ctx context.Context, lastRotateError pgtype.Text) error {
+	_, err := q.db.Exec(ctx, setSlackConfigTokenRotateError, lastRotateError)
 	return err
 }
 
@@ -390,4 +471,60 @@ type UpdateSlackAgentAppOAuthCredentialsParams struct {
 func (q *Queries) UpdateSlackAgentAppOAuthCredentials(ctx context.Context, arg UpdateSlackAgentAppOAuthCredentialsParams) error {
 	_, err := q.db.Exec(ctx, updateSlackAgentAppOAuthCredentials, arg.ID, arg.OauthClientIDEnc, arg.OauthClientSecretEnc)
 	return err
+}
+
+const updateSlackChatSessionLinkPermalink = `-- name: UpdateSlackChatSessionLinkPermalink :exec
+UPDATE slack_chat_session_link
+SET permalink = $2
+WHERE chat_session_id = $1
+`
+
+type UpdateSlackChatSessionLinkPermalinkParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	Permalink     pgtype.Text `json:"permalink"`
+}
+
+func (q *Queries) UpdateSlackChatSessionLinkPermalink(ctx context.Context, arg UpdateSlackChatSessionLinkPermalinkParams) error {
+	_, err := q.db.Exec(ctx, updateSlackChatSessionLinkPermalink, arg.ChatSessionID, arg.Permalink)
+	return err
+}
+
+const upsertSlackConfigToken = `-- name: UpsertSlackConfigToken :one
+INSERT INTO slack_config_token (id, access_token_enc, refresh_token_enc, expires_at,
+                                last_rotated_at, last_rotate_error, updated_at)
+VALUES (1, $1, $2, $3, now(), NULL, now())
+ON CONFLICT (id) DO UPDATE
+SET access_token_enc  = EXCLUDED.access_token_enc,
+    refresh_token_enc = EXCLUDED.refresh_token_enc,
+    expires_at        = EXCLUDED.expires_at,
+    last_rotated_at   = now(),
+    last_rotate_error = NULL,
+    updated_at        = now()
+RETURNING id, access_token_enc, refresh_token_enc, expires_at, last_rotated_at,
+          last_rotate_error, created_at, updated_at
+`
+
+type UpsertSlackConfigTokenParams struct {
+	AccessTokenEnc  string             `json:"access_token_enc"`
+	RefreshTokenEnc string             `json:"refresh_token_enc"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+// Idempotent write used by both bootstrap and rotate. The CHECK on id keeps
+// this row a singleton; ON CONFLICT keeps the upsert atomic so a concurrent
+// bootstrap + rotate cannot insert a second row.
+func (q *Queries) UpsertSlackConfigToken(ctx context.Context, arg UpsertSlackConfigTokenParams) (SlackConfigToken, error) {
+	row := q.db.QueryRow(ctx, upsertSlackConfigToken, arg.AccessTokenEnc, arg.RefreshTokenEnc, arg.ExpiresAt)
+	var i SlackConfigToken
+	err := row.Scan(
+		&i.ID,
+		&i.AccessTokenEnc,
+		&i.RefreshTokenEnc,
+		&i.ExpiresAt,
+		&i.LastRotatedAt,
+		&i.LastRotateError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

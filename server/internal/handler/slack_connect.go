@@ -323,7 +323,12 @@ func (h *Handler) ProvisionAgentSlackApp(w http.ResponseWriter, r *http.Request)
 		RedirectURL: slackRedirectURI(),
 	})
 
-	mc := slack.NewManifestClient(strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")))
+	mc, err := h.newConfigManifestClient(r.Context())
+	if err != nil {
+		slog.Error("slack: config token unavailable for create", "err", err, "agent_id", uuidToString(agentUUID))
+		writeError(w, http.StatusServiceUnavailable, "slack config token: "+err.Error())
+		return
+	}
 	created, err := mc.Create(r.Context(), manifest)
 	if err != nil {
 		slog.Error("slack: manifest create failed", "err", err, "agent_id", uuidToString(agentUUID))
@@ -525,10 +530,11 @@ func (h *Handler) SlackOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 // ── POST /api/workspaces/{id}/agents/{agentId}/slack/sync ───────────────
 
-// SyncAgentSlackApp re-publishes the manifest after the agent's
-// display name or description changed. The Slack-side bot user name
-// updates without requiring reinstall; permission changes (none in our
-// minimal manifest) would.
+// SyncAgentSlackApp re-publishes the manifest (name + description) so
+// the Slack-side app metadata matches the Multica agent after a
+// rename. Bot user avatars cannot be set via API — Slack requires
+// manual upload in the app dashboard — so this endpoint covers only
+// name + description.
 func (h *Handler) SyncAgentSlackApp(w http.ResponseWriter, r *http.Request) {
 	if !slackConfigured() {
 		writeError(w, http.StatusServiceUnavailable, "slack integration not configured")
@@ -563,7 +569,11 @@ func (h *Handler) SyncAgentSlackApp(w http.ResponseWriter, r *http.Request) {
 		RedirectURL: slackRedirectURI(),
 	})
 
-	mc := slack.NewManifestClient(strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")))
+	mc, err := h.newConfigManifestClient(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "slack config token: "+err.Error())
+		return
+	}
 	if _, err := mc.Update(r.Context(), app.SlackAppID, manifest); err != nil {
 		writeError(w, http.StatusBadGateway, "slack manifest update failed: "+err.Error())
 		return
@@ -615,7 +625,11 @@ func (h *Handler) VerifyAgentSlackApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mc := slack.NewManifestClient(strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")))
+	mc, err := h.newConfigManifestClient(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "slack config token: "+err.Error())
+		return
+	}
 	_, err = mc.Export(r.Context(), app.SlackAppID)
 	if err == nil {
 		writeJSON(w, http.StatusOK, SlackVerifyResponse{AppExists: true})
@@ -647,8 +661,12 @@ func (h *Handler) DisconnectAgentSlackApp(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	mc := slack.NewManifestClient(strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")))
-	if err := mc.Delete(r.Context(), app.SlackAppID); err != nil {
+	mc, mcErr := h.newConfigManifestClient(r.Context())
+	if mcErr != nil {
+		// Best-effort cleanup: if we can't reach Slack we still purge the
+		// local row so the agent's slack tab stops showing a phantom app.
+		slog.Warn("slack: config token unavailable for delete", "err", mcErr, "app_id", app.SlackAppID)
+	} else if err := mc.Delete(r.Context(), app.SlackAppID); err != nil {
 		slog.Warn("slack: manifest delete failed (continuing)", "err", err, "app_id", app.SlackAppID)
 	}
 	if err := h.Queries.DeleteSlackAgentApp(r.Context(), db.DeleteSlackAgentAppParams{
