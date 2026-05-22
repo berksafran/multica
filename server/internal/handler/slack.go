@@ -229,10 +229,16 @@ func (h *Handler) dispatchSlackEvent(ctx context.Context, app db.SlackAgentApp, 
 // a new chat_session. Returns (nil, nil) when the caller should drop the
 // event without erroring (e.g. reply to a thread we don't track).
 func (h *Handler) resolveSlackSession(ctx context.Context, app db.SlackAgentApp, teamID, channelID, threadTS, slackUserID string) (*db.ChatSession, error) {
+	// Scope the lookup to this app's agent. Two agents can coexist in
+	// the same channel/thread; without this filter the first one to
+	// claim the thread captures every later mention — including
+	// mentions of a different bot — and the outbound reply ends up
+	// being sent under the wrong app's token.
 	link, err := h.Queries.GetSlackChatSessionLinkByThread(ctx, db.GetSlackChatSessionLinkByThreadParams{
 		SlackTeamID:    teamID,
 		SlackChannelID: channelID,
 		SlackThreadTs:  threadTS,
+		AgentID:        app.AgentID,
 	})
 	if err == nil {
 		s, err := h.Queries.GetChatSession(ctx, link.ChatSessionID)
@@ -270,6 +276,7 @@ func (h *Handler) resolveSlackSession(ctx context.Context, app db.SlackAgentApp,
 		SlackChannelID: channelID,
 		SlackThreadTs:  threadTS,
 		SlackUserID:    slackUserID,
+		AgentID:        app.AgentID,
 	}); err != nil {
 		// The session exists but the link did not persist — without
 		// the link the next event will spawn a duplicate session, so

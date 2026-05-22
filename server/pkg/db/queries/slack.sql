@@ -73,15 +73,15 @@ DELETE FROM slack_agent_app WHERE id = $1 AND workspace_id = $2;
 
 -- name: CreateSlackChatSessionLink :one
 INSERT INTO slack_chat_session_link (
-    chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id
+    chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, agent_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
 RETURNING *;
 
 -- name: GetSlackChatSessionLinkByThread :one
 SELECT * FROM slack_chat_session_link
-WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3;
+WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3 AND agent_id = $4;
 
 -- name: GetSlackChatSessionLinkBySessionID :one
 SELECT * FROM slack_chat_session_link

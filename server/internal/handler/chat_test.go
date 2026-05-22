@@ -180,6 +180,7 @@ func TestSendChatMessage_SlackOwnedReturns409(t *testing.T) {
 			SlackChannelID: "C_TEST",
 			SlackThreadTs:  "1700000000.000100",
 			SlackUserID:    "U_TEST",
+			AgentID:        util.MustParseUUID(agentID),
 		},
 	); err != nil {
 		t.Fatalf("create slack link: %v", err)
@@ -232,6 +233,7 @@ func TestGetChatSession_PopulatesSlackThread(t *testing.T) {
 			SlackChannelID: "C_GET",
 			SlackThreadTs:  "1700000000.000200",
 			SlackUserID:    "U_GET",
+			AgentID:        util.MustParseUUID(agentID),
 		},
 	); err != nil {
 		t.Fatalf("create slack link: %v", err)

@@ -496,6 +496,7 @@ type SlackChatSessionLink struct {
 	SlackUserID    string             `json:"slack_user_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	Permalink      pgtype.Text        `json:"permalink"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
 }
 
 type SlackConfigToken struct {

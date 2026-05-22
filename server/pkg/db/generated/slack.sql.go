@@ -69,11 +69,11 @@ func (q *Queries) CreateSlackAgentApp(ctx context.Context, arg CreateSlackAgentA
 const createSlackChatSessionLink = `-- name: CreateSlackChatSessionLink :one
 
 INSERT INTO slack_chat_session_link (
-    chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id
+    chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, agent_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
-RETURNING chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink
+RETURNING chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink, agent_id
 `
 
 type CreateSlackChatSessionLinkParams struct {
@@ -82,6 +82,7 @@ type CreateSlackChatSessionLinkParams struct {
 	SlackChannelID string      `json:"slack_channel_id"`
 	SlackThreadTs  string      `json:"slack_thread_ts"`
 	SlackUserID    string      `json:"slack_user_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
 }
 
 // =====================
@@ -94,6 +95,7 @@ func (q *Queries) CreateSlackChatSessionLink(ctx context.Context, arg CreateSlac
 		arg.SlackChannelID,
 		arg.SlackThreadTs,
 		arg.SlackUserID,
+		arg.AgentID,
 	)
 	var i SlackChatSessionLink
 	err := row.Scan(
@@ -104,6 +106,7 @@ func (q *Queries) CreateSlackChatSessionLink(ctx context.Context, arg CreateSlac
 		&i.SlackUserID,
 		&i.CreatedAt,
 		&i.Permalink,
+		&i.AgentID,
 	)
 	return i, err
 }
@@ -207,7 +210,7 @@ func (q *Queries) GetSlackAgentAppByID(ctx context.Context, id pgtype.UUID) (Sla
 }
 
 const getSlackChatSessionLinkBySessionID = `-- name: GetSlackChatSessionLinkBySessionID :one
-SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink, agent_id FROM slack_chat_session_link
 WHERE chat_session_id = $1
 `
 
@@ -222,23 +225,30 @@ func (q *Queries) GetSlackChatSessionLinkBySessionID(ctx context.Context, chatSe
 		&i.SlackUserID,
 		&i.CreatedAt,
 		&i.Permalink,
+		&i.AgentID,
 	)
 	return i, err
 }
 
 const getSlackChatSessionLinkByThread = `-- name: GetSlackChatSessionLinkByThread :one
-SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
-WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink, agent_id FROM slack_chat_session_link
+WHERE slack_team_id = $1 AND slack_channel_id = $2 AND slack_thread_ts = $3 AND agent_id = $4
 `
 
 type GetSlackChatSessionLinkByThreadParams struct {
-	SlackTeamID    string `json:"slack_team_id"`
-	SlackChannelID string `json:"slack_channel_id"`
-	SlackThreadTs  string `json:"slack_thread_ts"`
+	SlackTeamID    string      `json:"slack_team_id"`
+	SlackChannelID string      `json:"slack_channel_id"`
+	SlackThreadTs  string      `json:"slack_thread_ts"`
+	AgentID        pgtype.UUID `json:"agent_id"`
 }
 
 func (q *Queries) GetSlackChatSessionLinkByThread(ctx context.Context, arg GetSlackChatSessionLinkByThreadParams) (SlackChatSessionLink, error) {
-	row := q.db.QueryRow(ctx, getSlackChatSessionLinkByThread, arg.SlackTeamID, arg.SlackChannelID, arg.SlackThreadTs)
+	row := q.db.QueryRow(ctx, getSlackChatSessionLinkByThread,
+		arg.SlackTeamID,
+		arg.SlackChannelID,
+		arg.SlackThreadTs,
+		arg.AgentID,
+	)
 	var i SlackChatSessionLink
 	err := row.Scan(
 		&i.ChatSessionID,
@@ -248,6 +258,7 @@ func (q *Queries) GetSlackChatSessionLinkByThread(ctx context.Context, arg GetSl
 		&i.SlackUserID,
 		&i.CreatedAt,
 		&i.Permalink,
+		&i.AgentID,
 	)
 	return i, err
 }
@@ -325,7 +336,7 @@ func (q *Queries) ListSlackAgentAppsByWorkspace(ctx context.Context, workspaceID
 }
 
 const listSlackChatSessionLinksBySessionIDs = `-- name: ListSlackChatSessionLinksBySessionIDs :many
-SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink FROM slack_chat_session_link
+SELECT chat_session_id, slack_team_id, slack_channel_id, slack_thread_ts, slack_user_id, created_at, permalink, agent_id FROM slack_chat_session_link
 WHERE chat_session_id = ANY($1::uuid[])
 `
 
@@ -346,6 +357,7 @@ func (q *Queries) ListSlackChatSessionLinksBySessionIDs(ctx context.Context, dol
 			&i.SlackUserID,
 			&i.CreatedAt,
 			&i.Permalink,
+			&i.AgentID,
 		); err != nil {
 			return nil, err
 		}
