@@ -88,6 +88,11 @@
     "aria_start": "把当前页面共享给 Multica"
   },
   "no_agent_banner": "需要先有一个智能体才能开始对话。",
+  "slack_thread_banner": {
+    "message": "本会话已关联到 Slack 话题串——请在 Slack 中回复。",
+    "open_link": "打开话题串",
+    "open_link_aria": "在 Slack 中打开此话题串"
+  },
   "offline_banner": {
     "fallback_name": "智能体",
     "unstable": "{{name}} 的连接不稳定——回复可能延迟。",

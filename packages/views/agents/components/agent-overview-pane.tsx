@@ -7,9 +7,11 @@ import {
   FileText,
   KeyRound,
   ListTodo,
+  MessageSquare,
   Terminal,
 } from "lucide-react";
 import type { Agent, AgentRuntime } from "@multica/core/types";
+import { useWorkspaceId } from "@multica/core/hooks";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +27,7 @@ import { InstructionsTab } from "./tabs/instructions-tab";
 import { SkillsTab } from "./tabs/skills-tab";
 import { EnvTab } from "./tabs/env-tab";
 import { CustomArgsTab } from "./tabs/custom-args-tab";
+import { SlackTab } from "./tabs/slack-tab";
 import { ActorIssuesPanel } from "../../common/actor-issues-panel";
 import { useT } from "../../i18n";
 
@@ -34,15 +37,17 @@ type DetailTab =
   | "instructions"
   | "skills"
   | "env"
-  | "custom_args";
+  | "custom_args"
+  | "slack";
 
-const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "skills" | "environment" | "custom_args"> = {
+const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "skills" | "environment" | "custom_args" | "slack"> = {
   activity: "activity",
   tasks: "tasks",
   instructions: "instructions",
   skills: "skills",
   env: "environment",
   custom_args: "custom_args",
+  slack: "slack",
 };
 
 const detailTabs: {
@@ -55,6 +60,7 @@ const detailTabs: {
   { id: "skills", icon: BookOpenText },
   { id: "env", icon: KeyRound },
   { id: "custom_args", icon: Terminal },
+  { id: "slack", icon: MessageSquare },
 ];
 
 interface AgentOverviewPaneProps {
@@ -92,6 +98,7 @@ export function AgentOverviewPane({
   onUpdate,
 }: AgentOverviewPaneProps) {
   const { t } = useT("agents");
+  const workspaceId = useWorkspaceId();
   const [activeTab, setActiveTab] = useState<DetailTab>("activity");
   const [activeDirty, setActiveDirty] = useState(false);
   // Holds the destination when a tab change is intercepted by the dirty
@@ -186,6 +193,9 @@ export function AgentOverviewPane({
               onDirtyChange={setActiveDirty}
             />
           </TabContent>
+        )}
+        {activeTab === "slack" && (
+          <SlackTab agent={agent} workspaceId={workspaceId} />
         )}
       </div>
 

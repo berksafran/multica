@@ -86,7 +86,9 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, chatSessionToResponse(session))
+	resp := chatSessionToResponse(session)
+	h.attachSlackThread(r, session.ID, &resp)
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +173,38 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	h.bulkAttachSlackThreads(r, resp)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// bulkAttachSlackThreads populates SlackThread on every response that has a
+// link row, via a single ANY($1::uuid[]) query. The list endpoint is a hot
+// path — looping attachSlackThread per row would be N+1.
+func (h *Handler) bulkAttachSlackThreads(r *http.Request, sessions []ChatSessionResponse) {
+	if len(sessions) == 0 {
+		return
+	}
+	ids := make([]pgtype.UUID, 0, len(sessions))
+	for _, s := range sessions {
+		ids = append(ids, parseUUID(s.ID))
+	}
+	links, err := h.Queries.ListSlackChatSessionLinksBySessionIDs(r.Context(), ids)
+	if err != nil {
+		slog.Warn("bulk slack thread lookup failed", "err", err)
+		return
+	}
+	if len(links) == 0 {
+		return
+	}
+	bySession := make(map[string]db.SlackChatSessionLink, len(links))
+	for _, link := range links {
+		bySession[uuidToString(link.ChatSessionID)] = link
+	}
+	for i := range sessions {
+		if link, ok := bySession[sessions[i].ID]; ok {
+			sessions[i].SlackThread = slackThreadFromLink(link)
+		}
+	}
 }
 
 func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request, userID, workspaceID, sessionID string) (db.ChatSession, bool) {
@@ -234,7 +267,9 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, chatSessionToResponse(session))
+	resp := chatSessionToResponse(session)
+	h.attachSlackThread(r, session.ID, &resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type UpdateChatSessionRequest struct {
@@ -294,7 +329,9 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
+	resp := chatSessionToResponse(updated)
+	h.attachSlackThread(r, updated.ID, &resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // DeleteChatSession hard-deletes a chat session owned by the caller. The
@@ -428,6 +465,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if session.Status != "active" {
 		writeError(w, http.StatusBadRequest, "chat session is archived")
 		return
+	}
+	// Slack-owned sessions: replies belong in the Slack thread that started
+	// the conversation. The UI gates send-button on slack_thread but a stale
+	// client could still hit this endpoint, so refuse server-side too.
+	if _, err := h.Queries.GetSlackChatSessionLinkBySessionID(r.Context(), session.ID); err == nil {
+		writeError(w, http.StatusConflict, "this chat session is owned by a Slack thread; reply in Slack")
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("slack link lookup on send failed", "session_id", sessionID, "err", err)
 	}
 
 	// Create the user message first so the daemon can always find it.
@@ -740,6 +786,20 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 // Response types & helpers
 // ---------------------------------------------------------------------------
 
+// SlackThreadInfo is the public, UI-facing view of slack_chat_session_link.
+// Presence of this object is the UI's signal that a session is "Slack-owned":
+// the input is locked, replies must happen in the Slack thread, and the
+// banner deep-links via Permalink when it's available.
+type SlackThreadInfo struct {
+	TeamID    string `json:"team_id"`
+	ChannelID string `json:"channel_id"`
+	ThreadTS  string `json:"thread_ts"`
+	// Permalink is best-effort: cached from chat.getPermalink at link creation
+	// time, may be empty if the API call failed (missing scope, transient
+	// error). UI falls back to plain text when empty.
+	Permalink string `json:"permalink,omitempty"`
+}
+
 type ChatSessionResponse struct {
 	ID          string `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
@@ -751,6 +811,10 @@ type ChatSessionResponse struct {
 	HasUnread bool   `json:"has_unread"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// Non-nil when this session was opened from a Slack thread. The UI gates
+	// send/upload/rename on this; SendChatMessage returns 409 if set so a
+	// stale UI cannot leak messages into a Slack-owned thread.
+	SlackThread *SlackThreadInfo `json:"slack_thread,omitempty"`
 }
 
 type ChatMessageResponse struct {
@@ -785,6 +849,39 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		CreatedAt:   timestampToString(s.CreatedAt),
 		UpdatedAt:   timestampToString(s.UpdatedAt),
 	}
+}
+
+// slackThreadFromLink shapes the public payload from a DB row. Nil for a
+// zero row so callers can pass through `slackThreadFromLink(link)` without
+// branching on Valid flags.
+func slackThreadFromLink(link db.SlackChatSessionLink) *SlackThreadInfo {
+	if link.SlackTeamID == "" {
+		return nil
+	}
+	info := &SlackThreadInfo{
+		TeamID:    link.SlackTeamID,
+		ChannelID: link.SlackChannelID,
+		ThreadTS:  link.SlackThreadTs,
+	}
+	if link.Permalink.Valid {
+		info.Permalink = link.Permalink.String
+	}
+	return info
+}
+
+// attachSlackThread fetches the optional Slack link for a single session and
+// populates resp.SlackThread. Missing link is the common case — pgx.ErrNoRows
+// is swallowed silently. Any other lookup error is logged but never blocks the
+// response (a temporary DB hiccup must not lock the user out of their chat).
+func (h *Handler) attachSlackThread(r *http.Request, sessionID pgtype.UUID, resp *ChatSessionResponse) {
+	link, err := h.Queries.GetSlackChatSessionLinkBySessionID(r.Context(), sessionID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("slack thread lookup failed", "session_id", uuidToString(sessionID), "err", err)
+		}
+		return
+	}
+	resp.SlackThread = slackThreadFromLink(link)
 }
 
 func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) ChatMessageResponse {

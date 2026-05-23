@@ -163,6 +163,110 @@ func TestUpdateChatSession_RejectsBlank(t *testing.T) {
 	}
 }
 
+// TestSendChatMessage_SlackOwnedReturns409 verifies that a session linked to
+// a Slack thread refuses POST /messages with 409. UI lockout is the primary
+// defense, but a stale client (or a curl) must not be able to leak messages
+// into a Slack-owned thread either.
+func TestSendChatMessage_SlackOwnedReturns409(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "ChatSlackOwnedAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	// Link the session to a fake Slack thread.
+	if _, err := testHandler.Queries.CreateSlackChatSessionLink(
+		context.Background(),
+		db.CreateSlackChatSessionLinkParams{
+			ChatSessionID:  util.MustParseUUID(sessionID),
+			SlackTeamID:    "T_TEST",
+			SlackChannelID: "C_TEST",
+			SlackThreadTs:  "1700000000.000100",
+			SlackUserID:    "U_TEST",
+			AgentID:        util.MustParseUUID(agentID),
+		},
+	); err != nil {
+		t.Fatalf("create slack link: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(
+			context.Background(),
+			`DELETE FROM slack_chat_session_link WHERE chat_session_id = $1`,
+			sessionID,
+		)
+	})
+
+	req := newRequest("POST", "/api/chat-sessions/"+sessionID+"/messages", map[string]any{
+		"content": "hello from UI",
+	})
+	req = withURLParam(req, "sessionId", sessionID)
+	req = withChatTestWorkspaceCtx(t, req)
+	w := httptest.NewRecorder()
+	testHandler.SendChatMessage(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("SendChatMessage on Slack-owned session: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Confirm no message row leaked through.
+	var count int
+	if err := testPool.QueryRow(
+		context.Background(),
+		`SELECT count(*) FROM chat_message WHERE chat_session_id = $1`,
+		sessionID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count chat_message: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 chat_message rows after rejected send, got %d", count)
+	}
+}
+
+// TestGetChatSession_PopulatesSlackThread verifies that a session linked to a
+// Slack thread returns a slack_thread payload so the UI can surface the
+// "Reply in Slack" lockout.
+func TestGetChatSession_PopulatesSlackThread(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "ChatSlackThreadGetAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	if _, err := testHandler.Queries.CreateSlackChatSessionLink(
+		context.Background(),
+		db.CreateSlackChatSessionLinkParams{
+			ChatSessionID:  util.MustParseUUID(sessionID),
+			SlackTeamID:    "T_GET",
+			SlackChannelID: "C_GET",
+			SlackThreadTs:  "1700000000.000200",
+			SlackUserID:    "U_GET",
+			AgentID:        util.MustParseUUID(agentID),
+		},
+	); err != nil {
+		t.Fatalf("create slack link: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(
+			context.Background(),
+			`DELETE FROM slack_chat_session_link WHERE chat_session_id = $1`,
+			sessionID,
+		)
+	})
+
+	req := newRequest("GET", "/api/chat-sessions/"+sessionID, nil)
+	req = withURLParam(req, "sessionId", sessionID)
+	req = withChatTestWorkspaceCtx(t, req)
+	w := httptest.NewRecorder()
+	testHandler.GetChatSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetChatSession: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp ChatSessionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode resp: %v", err)
+	}
+	if resp.SlackThread == nil {
+		t.Fatal("expected slack_thread to be populated, got nil")
+	}
+	if resp.SlackThread.TeamID != "T_GET" || resp.SlackThread.ChannelID != "C_GET" || resp.SlackThread.ThreadTS != "1700000000.000200" {
+		t.Fatalf("unexpected slack_thread payload: %+v", resp.SlackThread)
+	}
+}
+
 // TestSendChatMessage_InvalidAttachmentIDs rejects malformed UUIDs in
 // attachment_ids with 400 before any side effects (no message row created).
 func TestSendChatMessage_InvalidAttachmentIDs(t *testing.T) {

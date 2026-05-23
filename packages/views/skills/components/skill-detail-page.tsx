@@ -509,6 +509,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
           <Button
             variant="ghost"
             size="xs"
+            nativeButton={false}
             render={<AppLink href={paths.skills()} />}
           >
             <ArrowLeft className="h-3 w-3" />
@@ -555,6 +556,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         <Button
           variant="ghost"
           size="xs"
+          nativeButton={false}
           render={<AppLink href={paths.skills()} />}
         >
           <ArrowLeft className="h-3 w-3" />

@@ -35,6 +35,7 @@ import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
+import { SlackThreadBanner } from "./slack-thread-banner";
 import {
   chatSessionsOptions,
   chatMessagesOptions,
@@ -110,6 +111,13 @@ export function ChatWindow() {
     ? sessions.find((s) => s.id === activeSessionId)
     : null;
   const isSessionArchived = currentSession?.status === "archived";
+  // Slack-owned sessions: input, uploads, and rename are all locked from the
+  // UI. Replies must round-trip through the Slack thread that started the
+  // session so both sides stay in sync. The backend also returns 409 on
+  // SendChatMessage as a belt-and-suspenders defense, so a stale UI cannot
+  // leak messages into a Slack-owned thread.
+  const slackThread = currentSession?.slack_thread;
+  const isSlackOwned = !!slackThread;
 
   const qc = useQueryClient();
   const createSession = useCreateChatSession();
@@ -552,28 +560,37 @@ export function ChatWindow() {
       )}
 
       {/* Status banner above the input — single mutually-exclusive slot.
-       *  Priority: no-agent > offline / unstable. Agent presence is the
-       *  hard prerequisite (you can't send anything without one), so it
-       *  always wins over a presence hint. ContextAnchorCard stays in
-       *  topSlot because that's per-message context, not session state.
+       *  Priority: no-agent > slack-owned > offline / unstable. Agent
+       *  presence is the hard prerequisite (you can't send anything
+       *  without one), so it always wins. Slack ownership is a structural
+       *  lock (replies belong elsewhere), so it preempts presence — a
+       *  Slack-linked session staying offline is irrelevant to the user
+       *  because they can't message from this surface anyway.
+       *  ContextAnchorCard stays in topSlot because that's per-message
+       *  context, not session state.
        *
        *  We key off `noAgent` (the resolved-empty state) rather than
        *  `!activeAgent`, so the loading window between mount and the
        *  first agent-list response stays banner-free. */}
       {noAgent ? (
         <NoAgentBanner />
+      ) : slackThread ? (
+        <SlackThreadBanner thread={slackThread} />
       ) : (
         <OfflineBanner agentName={activeAgent?.name} availability={availability} />
       )}
 
-      {/* Input — disabled for legacy archived sessions; locked out entirely
-       *  when there's no agent (the EmptyState above carries the CTA). */}
+      {/* Input — disabled for legacy archived sessions and for Slack-owned
+       *  sessions (reply belongs in the Slack thread). Uploads are also
+       *  gated on Slack ownership: an attachment uploaded here would have
+       *  no home in the Slack-side conversation. Locked out entirely when
+       *  there's no agent (the EmptyState above carries the CTA). */}
       <ChatInput
         onSend={handleSend}
-        onUploadFile={handleUploadFile}
+        onUploadFile={isSlackOwned ? undefined : handleUploadFile}
         onStop={handleStop}
         isRunning={!!pendingTaskId}
-        disabled={isSessionArchived}
+        disabled={isSessionArchived || isSlackOwned}
         noAgent={noAgent}
         agentName={activeAgent?.name}
         topSlot={<ContextAnchorCard />}
@@ -795,6 +812,10 @@ function SessionDropdown({
     const agent = agentById.get(session.agent_id) ?? null;
     const isRunning = inFlightSessionIds.has(session.id);
     const isRenaming = renamingId === session.id;
+    // Slack-owned sessions: the title typically encodes the Slack channel
+    // + user (#channel · Alice), and rename would drift the UI label from
+    // the source-of-truth Slack thread. Hide the pencil entirely.
+    const isSlackSession = !!session.slack_thread;
     return (
       <DropdownMenuItem
         key={session.id}
@@ -867,25 +888,27 @@ function SessionDropdown({
         )}
         {!isRenaming && (
           <>
-            <button
-              type="button"
-              // preventDefault is what tells Base UI's Menu.Item to skip
-              // its close-on-click; stopPropagation prevents the row's
-              // onClick from also firing (which would switch sessions).
-              // onPointerDown is stopped too so the menu's typeahead /
-              // focus tracking doesn't pre-empt the click.
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                setRenamingId(session.id);
-              }}
-              className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-              aria-label={t(($) => $.session_history.row_rename_aria)}
-              title={t(($) => $.session_history.row_rename_aria)}
-            >
-              <Pencil className="size-3.5" />
-            </button>
+            {!isSlackSession && (
+              <button
+                type="button"
+                // preventDefault is what tells Base UI's Menu.Item to skip
+                // its close-on-click; stopPropagation prevents the row's
+                // onClick from also firing (which would switch sessions).
+                // onPointerDown is stopped too so the menu's typeahead /
+                // focus tracking doesn't pre-empt the click.
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setRenamingId(session.id);
+                }}
+                className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                aria-label={t(($) => $.session_history.row_rename_aria)}
+                title={t(($) => $.session_history.row_rename_aria)}
+              >
+                <Pencil className="size-3.5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={(e) => {

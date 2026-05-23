@@ -63,7 +63,7 @@ export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
 export type { Attachment } from "./attachment";
-export type { ChatSession, ChatMessage, ChatPendingTask, PendingChatTaskItem, PendingChatTasksResponse, SendChatMessageResponse } from "./chat";
+export type { ChatSession, ChatMessage, ChatPendingTask, PendingChatTaskItem, PendingChatTasksResponse, SendChatMessageResponse, SlackThreadInfo } from "./chat";
 export type { StorageAdapter } from "./storage";
 export type {
   Project,
@@ -88,6 +88,14 @@ export type {
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
 } from "./github";
+export type {
+  AgentSlackStatusResponse,
+  ProvisionAgentSlackResponse,
+  AgentSlackCredentialsResponse,
+  UpdateAgentSlackCredentialsRequest,
+  UpdateAgentSlackSettingsRequest,
+  AgentSlackVerifyResponse,
+} from "./slack";
 export type {
   Autopilot,
   AutopilotStatus,

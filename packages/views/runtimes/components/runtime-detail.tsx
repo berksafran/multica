@@ -150,6 +150,11 @@ export function RuntimeDetail({ runtime }: { runtime: AgentRuntime }) {
         <Button
           variant="ghost"
           size="xs"
+          // nativeButton=false because the render slot is an <a> (AppLink),
+          // not a <button>; without this Base UI warns about losing native
+          // button semantics, but a link IS the right element here — it
+          // navigates rather than submits a form.
+          nativeButton={false}
           render={<AppLink href={paths.runtimes()} />}
         >
           <ArrowLeft className="h-3 w-3" />

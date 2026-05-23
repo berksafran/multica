@@ -108,7 +108,22 @@ type RouterOptions struct {
 	HeartbeatScheduler handler.HeartbeatScheduler
 }
 
+// NewRouterAndHandlerWithOptions returns both the wired chi.Router and the
+// underlying *handler.Handler. Background workers in main.go need the
+// handler instance (for shared singletons like the Slack config-token
+// service); existing callers that only need the router go through the
+// thin wrapper below to stay binary-compatible with tests.
+func NewRouterAndHandlerWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
+	r, h := newRouterAndHandlerInternal(pool, hub, bus, analyticsClient, rdb, opts)
+	return r, h
+}
+
 func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) chi.Router {
+	r, _ := newRouterAndHandlerInternal(pool, hub, bus, analyticsClient, rdb, opts)
+	return r
+}
+
+func newRouterAndHandlerInternal(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
 	queries := db.New(pool)
 	emailSvc := service.NewEmailService()
 	daemonHub := opts.DaemonHub
@@ -165,6 +180,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.PATCache = patCache
 	h.DaemonTokenCache = daemonTokenCache
 	h.MembershipCache = auth.NewMembershipCache(rdb)
+
+	// Wire the Slack outbound bridge: assistant messages on Slack-originated
+	// chat sessions are forwarded to the Slack thread via Bus.Subscribe.
+	h.RegisterSlackOutboundListeners()
 
 	// Empty-claim cache: lets the daemon poll path skip a Postgres
 	// scan when a recent check confirmed the runtime had no queued
@@ -263,6 +282,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 
+	// Slack Events API webhook (per-agent endpoint, signature verified
+	// against the per-app secret in slack_agent_app) and OAuth callback.
+	r.Post("/api/webhooks/slack/{agent_id}", h.HandleSlackWebhook)
+	r.Get("/api/slack/oauth/callback", h.SlackOAuthCallback)
+
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache))
@@ -360,6 +384,31 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+				})
+
+				// Slack integration — read status as a member; provision /
+				// install / sync / disconnect are admin-only because each
+				// mints or destroys an external Slack App. Credentials
+				// edit also admin-only since the client_secret is an
+				// install-flow gating capability.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/agents/{agentId}/slack", h.GetAgentSlackStatus)
+					r.Get("/agents/{agentId}/slack/credentials", h.GetAgentSlackCredentials)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/agents/{agentId}/slack/provision", h.ProvisionAgentSlackApp)
+					r.Post("/agents/{agentId}/slack/sync", h.SyncAgentSlackApp)
+					r.Post("/agents/{agentId}/slack/verify", h.VerifyAgentSlackApp)
+					r.Put("/agents/{agentId}/slack/credentials", h.UpdateAgentSlackCredentials)
+					r.Put("/agents/{agentId}/slack/settings", h.UpdateAgentSlackSettings)
+					r.Delete("/agents/{agentId}/slack", h.DisconnectAgentSlackApp)
+					// Workspace-scoped URL keeps reuse of the role gate; the
+					// row itself is a process-wide singleton.
+					r.Get("/slack/config-token", h.GetSlackConfigTokenStatus)
+					r.Post("/slack/config-token/bootstrap", h.BootstrapSlackConfigToken)
+					r.Post("/slack/config-token/rotate", h.RotateSlackConfigToken)
 				})
 			})
 		})
@@ -658,7 +707,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	})
 
-	return r
+	return r, h
 }
 
 // membershipChecker implements realtime.MembershipChecker using database queries.
