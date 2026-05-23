@@ -65,12 +65,26 @@ func runSlackConfigTokenScheduler(ctx context.Context, h *handler.Handler, queri
 func tickSlackConfigTokenRotation(ctx context.Context, h *handler.Handler, queries *db.Queries) {
 	row, err := queries.GetSlackConfigToken(ctx)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Never bootstrapped. If the env var is set, the deployment is
-		// still on the legacy path — log periodically so the operator
-		// sees a nudge to paste tokens via the admin UI.
-		if strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")) != "" {
-			slog.Debug("slack config token scheduler: env-var fallback in use; paste tokens in admin UI to enable auto-rotation")
+		// Never bootstrapped. If SLACK_CONFIG_REFRESH_TOKEN is present,
+		// seed the row by rotating once — after that auto-rotation takes
+		// over. If only SLACK_CONFIG_TOKEN is set we cannot rotate, so
+		// just leave the legacy single-env path running.
+		if strings.TrimSpace(os.Getenv("SLACK_CONFIG_REFRESH_TOKEN")) == "" {
+			if strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")) != "" {
+				slog.Debug("slack config token scheduler: SLACK_CONFIG_REFRESH_TOKEN missing; auto-rotation disabled")
+			}
+			return
 		}
+		svc, svcErr := h.SlackConfigTokensForScheduler()
+		if svcErr != nil {
+			slog.Warn("slack config token scheduler: service unavailable for env bootstrap", "err", svcErr)
+			return
+		}
+		if bootErr := svc.BootstrapFromEnv(ctx); bootErr != nil {
+			slog.Warn("slack config token scheduler: env bootstrap failed", "err", bootErr)
+			return
+		}
+		slog.Info("slack config token scheduler: env bootstrap completed")
 		return
 	}
 	if err != nil {

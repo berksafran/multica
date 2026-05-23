@@ -28,8 +28,13 @@ import (
 // configTokenService moves the token into Postgres (singleton row,
 // AES-GCM encrypted via SLACK_TOKEN_ENC_KEY) and rotates it ahead of expiry
 // via apps.manifest.rotate / tooling.tokens.rotate. The env vars
-// SLACK_CONFIG_TOKEN + SLACK_CONFIG_REFRESH_TOKEN remain as a one-time
-// bootstrap: the first call after a clean install seeds the DB from them.
+// SLACK_CONFIG_TOKEN + SLACK_CONFIG_REFRESH_TOKEN seed the DB on the first
+// call after a clean install: when both are set, the next Current() /
+// scheduler tick that hits an empty row issues a tooling.tokens.rotate
+// using the refresh token and persists the result, after which auto-rotation
+// owns the lifecycle. The access env value can be the already-expired
+// token Slack shows in the dashboard — rotate authenticates with the
+// refresh token alone.
 //
 // Concurrency model: a single mu serializes rotations within a process so
 // two near-simultaneous Current() calls don't both burn a refresh token
@@ -100,9 +105,21 @@ type ConfigTokenStatus struct {
 func (s *configTokenService) Current(ctx context.Context) (string, error) {
 	row, err := s.q.GetSlackConfigToken(ctx)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Bootstrap fallback: env var must serve the very first request
-		// after install so the admin can paste tokens via the UI. After
-		// that the DB row owns lifecycle.
+		bootstrapped, bootErr := s.tryBootstrapFromEnv(ctx)
+		if bootstrapped {
+			row, err = s.q.GetSlackConfigToken(ctx)
+			if err != nil {
+				return "", fmt.Errorf("load post-bootstrap: %w", err)
+			}
+			return s.cipher.Decrypt(row.AccessTokenEnc)
+		}
+		if bootErr != nil {
+			// Refresh token bad / Slack unreachable: surface the cause
+			// rather than silently serve a likely-expired access token.
+			return "", bootErr
+		}
+		// Single-env legacy path: only SLACK_CONFIG_TOKEN is set, no
+		// refresh available — best effort, no rotation possible.
 		if env := strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")); env != "" {
 			return env, nil
 		}
@@ -173,6 +190,47 @@ func (s *configTokenService) Bootstrap(ctx context.Context, accessToken, refresh
 	return s.persistRotation(ctx, resp)
 }
 
+// tryBootstrapFromEnv seeds the singleton row from the SLACK_CONFIG_TOKEN
+// + SLACK_CONFIG_REFRESH_TOKEN env vars when no row exists yet. Returns
+// (true, nil) if a row is present afterwards (whether this call wrote it
+// or a sibling did). (false, nil) means env vars are not configured for
+// bootstrap — caller should fall back to its existing behavior. A non-nil
+// error means the rotate call failed (usually an invalid refresh token
+// requiring operator action).
+//
+// We rotate immediately instead of writing the raw env values: rotate
+// uses the refresh token alone, so the env access value is allowed to be
+// the expired token visible in the Slack dashboard. Persisting the
+// rotation response lands Slack's authoritative expires_at on the first
+// write, which is exactly what auto-rotation needs going forward.
+func (s *configTokenService) tryBootstrapFromEnv(ctx context.Context) (bool, error) {
+	access := strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN"))
+	refresh := strings.TrimSpace(os.Getenv("SLACK_CONFIG_REFRESH_TOKEN"))
+	if refresh == "" {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Sibling may have bootstrapped while we were waiting for the lock.
+	if _, err := s.q.GetSlackConfigToken(ctx); err == nil {
+		return true, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("re-load config token: %w", err)
+	}
+
+	s.client.SetAccessToken(access)
+	resp, err := s.client.Rotate(ctx, refresh)
+	if err != nil {
+		return false, fmt.Errorf("env bootstrap rotate: %w", err)
+	}
+	if err := s.persistRotation(ctx, resp); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Rotate forces a rotation regardless of the current expires_at. The
 // admin UI's "Rotate now" button calls this; the scheduler also uses it
 // on its background tick.
@@ -200,7 +258,10 @@ func (s *configTokenService) Status(ctx context.Context) (ConfigTokenStatus, err
 		st := ConfigTokenStatus{Configured: false}
 		if env := strings.TrimSpace(os.Getenv("SLACK_CONFIG_TOKEN")); env != "" {
 			st.Configured = true
-			st.FromEnvFallback = true
+			// FromEnvFallback signals "no rotation possible". With a
+			// refresh env var present, the next Current() / scheduler
+			// tick will bootstrap auto-rotation — that's not a fallback.
+			st.FromEnvFallback = strings.TrimSpace(os.Getenv("SLACK_CONFIG_REFRESH_TOKEN")) == ""
 		}
 		return st, nil
 	}
@@ -310,6 +371,16 @@ func (h *Handler) SlackConfigTokensForScheduler() (SlackConfigTokenRotator, erro
 // stays testable without exporting the whole struct.
 type SlackConfigTokenRotator interface {
 	Rotate(ctx context.Context) error
+	BootstrapFromEnv(ctx context.Context) error
+}
+
+// BootstrapFromEnv is the scheduler-facing wrapper around
+// tryBootstrapFromEnv. It returns nil when the row already exists (no-op)
+// or when bootstrap succeeded; the scheduler logs failures so an
+// operator-supplied bad refresh token is visible.
+func (s *configTokenService) BootstrapFromEnv(ctx context.Context) error {
+	_, err := s.tryBootstrapFromEnv(ctx)
+	return err
 }
 
 func (h *Handler) slackConfigTokens() (*configTokenService, error) {

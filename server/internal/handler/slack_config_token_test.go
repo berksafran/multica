@@ -191,6 +191,78 @@ func TestSlackConfigToken_StatusFromEnvFallback(t *testing.T) {
 	}
 }
 
+// TestSlackConfigToken_CurrentBootstrapsFromEnv verifies that an empty
+// DB row plus SLACK_CONFIG_REFRESH_TOKEN env var triggers an automatic
+// rotate-and-persist on the first Current() call. This is the path that
+// rescues a deployment whose env-only access token has aged out: no
+// admin UI paste required.
+func TestSlackConfigToken_CurrentBootstrapsFromEnv(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test DB not available")
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM slack_config_token`)
+	})
+
+	t.Setenv("SLACK_CONFIG_TOKEN", "expired-env-access")
+	t.Setenv("SLACK_CONFIG_REFRESH_TOKEN", "env-refresh")
+
+	exp := time.Now().Add(12 * time.Hour).UTC().Truncate(time.Second)
+	calls := 0
+	srv := newRotateServer(t, "bootstrapped-access", "bootstrapped-refresh", exp, &calls)
+	t.Cleanup(srv.Close)
+
+	svc := newConfigTokenService(testHandler.Queries, newTestCipher(t))
+	withRotateBaseURL(svc, srv.URL)
+
+	tok, err := svc.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if tok != "bootstrapped-access" {
+		t.Fatalf("Current returned %q, want bootstrapped-access", tok)
+	}
+	if calls != 1 {
+		t.Fatalf("rotate calls = %d, want 1", calls)
+	}
+
+	// Second call should read the persisted row directly — no extra rotate.
+	if _, err := svc.Current(context.Background()); err != nil {
+		t.Fatalf("Current 2: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("rotate calls after second Current = %d, want 1", calls)
+	}
+}
+
+// TestSlackConfigToken_StatusNoFallbackWhenRefreshSet ensures Status
+// stops claiming FromEnvFallback once the refresh env var is available:
+// auto-rotation is configured (just not bootstrapped yet), which is a
+// different state than the no-rotation legacy path.
+func TestSlackConfigToken_StatusNoFallbackWhenRefreshSet(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test DB not available")
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM slack_config_token`)
+	})
+
+	t.Setenv("SLACK_CONFIG_TOKEN", "xoxe.xoxp-env")
+	t.Setenv("SLACK_CONFIG_REFRESH_TOKEN", "xoxe-1-env-refresh")
+
+	svc := newConfigTokenService(testHandler.Queries, newTestCipher(t))
+	st, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Configured {
+		t.Fatalf("expected Configured=true")
+	}
+	if st.FromEnvFallback {
+		t.Fatalf("expected FromEnvFallback=false when refresh env var is set")
+	}
+}
+
 // TestSlackIsTokenExpired_Matchers locks down the substring matchers so a
 // future rename in the slack package surfaces here instead of silently
 // breaking auto-rotation detection.
